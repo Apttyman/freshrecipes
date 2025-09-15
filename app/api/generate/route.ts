@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
       return new Response("Instruction too long (max 2000 chars).", { status: 413 });
     }
 
-    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const model = process.env.OPENAI_MODEL || "gpt-5";
 
     const rsp = await client.chat.completions.create({
   model,
