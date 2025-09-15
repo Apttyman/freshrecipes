@@ -30,11 +30,11 @@ export default function Home() {
     setErr(null);
     setHtml("");
     try {
-const res = await fetch("api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instruction }),
-      });
+const res = await fetch("/api/generate", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ instruction }),
+});
       if (!res.ok) throw new Error(await res.text());
       const text = await res.text();
       if (!text.trim().startsWith("<!DOCTYPE html>")) {
