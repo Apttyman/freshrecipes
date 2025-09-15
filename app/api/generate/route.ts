@@ -51,10 +51,15 @@ You are an HTML generator.
 
     const html = rsp.choices?.[0]?.message?.content ?? "";
 
-    if (!/^<!DOCTYPE html>/i.test(html.trim())) {
-      console.error("Model response did not start with DOCTYPE:", html.slice(0, 200));
-      return new Response("Model did not return a complete HTML document.", { status: 502 });
-    }
+    const html = rsp.choices?.[0]?.message?.content ?? "";
+
+if (!/^<!DOCTYPE html>/i.test(html.trim())) {
+  console.error("MODEL RAW OUTPUT:", html.slice(0, 200));
+  return new Response(
+    `Model did not return HTML. Got: ${html.slice(0, 200)}`,
+    { status: 502 }
+  );
+}
 
     return new Response(html, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
