@@ -30,14 +30,24 @@ export async function POST(req: NextRequest) {
     const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
     const rsp = await client.chat.completions.create({
-      model,
-      temperature: 0.5,
-      max_tokens: 5000,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: instruction },
-      ],
-    });
+  model,
+  temperature: 0.5,
+  max_tokens: 7000,   // raise token cap for longer docs
+  messages: [
+    {
+      role: "system",
+      content: `
+You are an HTML generator. 
+- Always return ONE valid, complete HTML5 document.
+- Begin with <!DOCTYPE html>.
+- Include <html>, <head> (with <meta charset="utf-8"> and <meta name="viewport">), <style> with all CSS, and <body>.
+- Never return Markdown or plain text.
+- Never explain, only output the HTML file.
+`,
+    },
+    { role: "user", content: instruction },
+  ],
+});
 
     const html = rsp.choices?.[0]?.message?.content ?? "";
 
