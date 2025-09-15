@@ -1,242 +1,230 @@
-"use client";
-import { useEffect, useMemo, useState } from "react";
+'use client';
 
-export default function Home() {
-  const [instruction, setInstruction] = useState("");
-  const [html, setHtml] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-  // Blob URL for preview / download
-  const blobUrl = useMemo(() => {
-    if (!html) return "";
-    return URL.createObjectURL(new Blob([html], { type: "text/html" }));
+export default function HomePage() {
+  const [instruction, setInstruction] = useState('');
+  const [status, setStatus] = useState<'idle'|'working'|'ready'|'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  // HTML produced by /api/generate
+  const [html, setHtml] = useState<string>('');
+
+  // Blob URL for local preview / download
+  const blobUrlRef = useRef<string | null>(null);
+
+  // URL returned by archive endpoint (/api/recipes) – if available we show “Open page”
+  const [archiveUrl, setArchiveUrl] = useState<string | null>(null);
+
+  // housekeeping: revoke previous preview blob when html changes
+  useEffect(() => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
+    if (html) {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      blobUrlRef.current = URL.createObjectURL(blob);
+    }
   }, [html]);
 
-  // Cmd/Ctrl + Enter to submit
+  // keyboard shortcut: Cmd/Ctrl + Enter to Generate
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    const onKey = (e: KeyboardEvent) => {
+      const isCmdEnter = (e.metaKey || e.ctrlKey) && e.key === 'Enter';
+      if (isCmdEnter) {
+        e.preventDefault();
         void handleGenerate();
       }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instruction]);
+
+  const downloadName = useMemo(() => {
+    // create a friendly download name from the instruction
+    const base = (instruction || 'fresh-recipe')
+      .toLowerCase()
+      .replace(/[^\w\s-]+/g, '')
+      .slice(0, 60)
+      .trim()
+      .replace(/\s+/g, '-');
+    return `${base || 'fresh-recipe'}.html`;
   }, [instruction]);
 
   async function handleGenerate() {
-    if (!instruction.trim() || loading) return;
-    setLoading(true);
-    setErr(null);
-    setHtml("");
+    setStatus('working');
+    setError(null);
+    setHtml('');
+    setArchiveUrl(null);
+
     try {
-const res = await fetch("/api/generate", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ instruction }),
-});
-      if (!res.ok) throw new Error(await res.text());
-      const text = await res.text();
-      if (!text.trim().startsWith("<!DOCTYPE html>")) {
-        throw new Error("The model returned something other than a full HTML file.");
+      // 1) Ask your server to generate a COMPLETE HTML file
+      const rsp = await fetch('/api/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ instruction: instruction.trim() })
+      });
+
+      if (!rsp.ok) {
+        const text = await rsp.text().catch(() => '');
+        throw new Error(text || `Server error (${rsp.status})`);
+      }
+
+      // Expect pure HTML back
+      const text = await rsp.text();
+      if (!/^<!DOCTYPE html>/i.test(text.trim())) {
+        throw new Error('Model did not return a full HTML document.');
       }
       setHtml(text);
-    } catch (e: any) {
-      setErr(e?.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
+      setStatus('ready');
+
+      // 2) Try to archive it (optional but recommended)
+      //    Requires the /api/recipes POST route I gave you earlier.
+      try {
+        const save = await fetch('/api/recipes', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            html: text,
+            instruction: instruction.trim()
+          })
+        });
+
+        if (save.ok) {
+          const { url } = await save.json().catch(() => ({}));
+          if (url && typeof url === 'string') setArchiveUrl(url);
+        }
+        // if archiving fails silently, we still keep the preview/download
+      } catch { /* ignore archive failure for UX */ }
+
+    } catch (err: any) {
+      setStatus('error');
+      setError(err?.message || 'Something went wrong.');
     }
   }
 
-  function download() {
-    if (!blobUrl) return;
-    const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = `recipes_${new Date().toISOString().replace(/[:.]/g, "-")}.html`;
-    a.click();
-  }
-
   return (
-    <main className="page">
-      <div className="halo" aria-hidden />
-      <header className="head">
-        <div className="brand">
-          <span className="dot" aria-hidden />
-          <h1>Fresh <span className="accent">Recipes</span></h1>
+    <main className="min-h-dvh bg-white text-slate-900 selection:bg-amber-200">
+      <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
+        <div className="mx-auto max-w-4xl px-4 py-4 flex items-center justify-between">
+          <h1 className="text-2xl sm:text-3xl font-serif font-bold tracking-tight">
+            Fresh Recipes
+          </h1>
+
+          <nav className="flex items-center gap-3">
+            <a
+              href="/recipes"
+              className="inline-flex items-center rounded-md border border-slate-300 px-3 py-2 text-sm font-medium hover:bg-slate-50"
+            >
+              Previous Recipes
+            </a>
+          </nav>
         </div>
-        <p className="tag">Generate designer-grade recipe pages from a single instruction.</p>
       </header>
 
-      <section className="card" role="region" aria-label="Recipe instruction">
-        <label htmlFor="instr" className="label">Your instruction</label>
-        <textarea
-          id="instr"
-          className="input"
-          placeholder={`e.g., Fetch 5 of the top pasta recipes from famous chefs...
-Include full descriptions, ingredients, numbered steps, real images linked to sources.
-Output a Food52-style, responsive, accessible HTML document.`}
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          spellCheck={false}
-        />
+      <section className="mx-auto max-w-4xl px-4 py-6">
+        <p className="text-slate-600">
+          Generate designer-grade recipe pages from a single instruction. Your instruction becomes
+          the exact task (e.g., “Fetch 5 pasta recipes from famous chefs” or “One Thomas Keller ice
+          cream recipe with step photos”).
+        </p>
 
-        <div className="actions">
-          <button
-            className="btn primary"
-            onClick={handleGenerate}
-            disabled={!instruction.trim() || loading}
-            aria-busy={loading}
-          >
-            {loading ? (
-              <span className="spinner" aria-hidden />
-            ) : (
-              <span className="kbd" aria-hidden>⌘</span>
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <label htmlFor="instruction" className="block text-sm font-semibold text-slate-800">
+            Your instruction
+          </label>
+          <textarea
+            id="instruction"
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            placeholder="e.g., Fetch 5 pasta recipes from famous chefs. Embed step photos if available; Food52-style layout."
+            rows={6}
+            className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-[15px] outline-none focus:ring-2 focus:ring-amber-400"
+          />
+
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleGenerate}
+              disabled={status === 'working' || !instruction.trim()}
+              className="inline-flex items-center rounded-md bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-amber-700 disabled:opacity-50"
+              aria-busy={status === 'working'}
+            >
+              {status === 'working' ? 'Generating…' : 'Generate (⌘/Ctrl + Enter)'}
+            </button>
+
+            {/* Download button becomes active once we have HTML */}
+            {blobUrlRef.current && (
+              <a
+                href={blobUrlRef.current}
+                download={downloadName}
+                className="inline-flex items-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-100"
+              >
+                Download .html
+              </a>
             )}
-            <span>{loading ? "Generating…" : "Generate (⌘/Ctrl + Enter)"}</span>
-          </button>
 
-          <button className="btn" onClick={download} disabled={!blobUrl}>
-            Download .html
-          </button>
+            {/* If the archive endpoint returned a URL, show “Open page” */}
+            {archiveUrl && (
+              <a
+                href={archiveUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center rounded-md border border-emerald-600 text-emerald-700 px-4 py-2 text-sm font-semibold hover:bg-emerald-50"
+              >
+                Open page
+              </a>
+            )}
+          </div>
 
-          <a
-            className={`btn link ${!blobUrl ? "disabled" : ""}`}
-            href={blobUrl || "#"}
-            target="_blank"
-            rel="noreferrer"
-            aria-disabled={!blobUrl}
-          >
-            Preview
-          </a>
+          {/* status & errors */}
+          <div className="mt-3 text-sm">
+            {status === 'ready' && (
+              <p className="text-emerald-700">Ready — open Preview or Download.</p>
+            )}
+            {status === 'error' && (
+              <p className="text-red-700">
+                {error || 'Server error. Check your API route logs on Vercel.'}
+              </p>
+            )}
+          </div>
         </div>
 
-        <div className="status" aria-live="polite">
-          {err && <p className="error">❌ {err}</p>}
-          {!err && html && <p className="ok">✅ Ready — open Preview or Download.</p>}
+        {/* Live preview card */}
+        <div className="mt-6">
+          <h2 className="mb-3 text-lg font-semibold text-slate-800">Live Preview</h2>
+
+          {!html && (
+            <div className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-slate-500">
+              Your generated HTML will appear here.
+            </div>
+          )}
+
+          {html && (
+            <iframe
+              className="h-[70vh] w-full overflow-hidden rounded-lg border border-slate-200 shadow-sm"
+              src={blobUrlRef.current ?? undefined}
+              title="Recipe Preview"
+            />
+          )}
         </div>
       </section>
 
-      {html && (
-        <section className="preview" role="region" aria-label="Live preview">
-          <h2>Live Preview</h2>
-          <iframe title="Generated HTML Preview" src={blobUrl} />
-        </section>
-      )}
-
-      <footer className="foot">
-        <p>
-          Tip: Keep instructions specific. You can request layout rules, color palettes, and sourcing requirements.
-        </p>
-      </footer>
-
-      <style jsx>{`
-        /* ====== Design Tokens ====== */
-        :root{
-          --bg:#0b0d10;
-          --bg2:#12151a;
-          --fg:#e9eef5;
-          --sub:#aab5c3;
-          --line:rgba(255,255,255,.08);
-          --accent:#65d6a6;
-          --accent-2:#7fb7ff;
-          --danger:#ff7a7a;
-          --shadow:0 10px 40px rgba(0,0,0,.45);
-          --radius:14px;
-        }
-        @media (prefers-color-scheme: light){
-          :root{
-            --bg:#f6f7fb;
-            --bg2:#ffffff;
-            --fg:#0f1320;
-            --sub:#4c566a;
-            --line:rgba(5,10,20,.08);
-            --accent:#1a9f6e;
-            --accent-2:#246bff;
-            --shadow:0 12px 40px rgba(22,28,45,.08);
-          }
-        }
-
-        /* ====== Layout ====== */
-        .page{
-          min-height:100svh;
-          background:
-            radial-gradient(1200px 800px at 20% -10%, rgba(127,183,255,.20), transparent 60%),
-            radial-gradient(900px 600px at 110% 10%, rgba(101,214,166,.18), transparent 55%),
-            var(--bg);
-          color:var(--fg);
-          padding: clamp(16px, 3vw, 28px);
-        }
-        .halo{
-          position:fixed; inset:0;
-          background: radial-gradient(700px 300px at 50% -80px, rgba(255,255,255,.08), transparent 60%);
-          pointer-events:none;
-        }
-
-        .head{max-width:960px; margin:0 auto 18px;}
-        .brand{display:flex; align-items:center; gap:12px;}
-        .brand h1{font-weight:800; letter-spacing:.3px; font-size:clamp(28px, 4.2vw, 44px); margin:0;}
-        .accent{color:var(--accent);}
-        .dot{width:14px; height:14px; border-radius:50%; background:linear-gradient(135deg,var(--accent),var(--accent-2)); box-shadow:0 0 0 6px rgba(127,183,255,.12), 0 0 32px rgba(101,214,166,.45);}
-        .tag{margin:.25rem 0 0; color:var(--sub); font-size:clamp(14px,1.6vw,16px)}
-
-        .card{
-          max-width:960px; margin:18px auto 12px; padding:18px;
-          background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
-          border:1px solid var(--line);
-          backdrop-filter: blur(10px);
-          border-radius: var(--radius);
-          box-shadow: var(--shadow);
-        }
-
-        .label{display:block; font-weight:600; margin:4px 0 8px; color:var(--sub)}
-        .input{
-          width:100%; min-height:150px; resize:vertical;
-          padding:14px 16px; line-height:1.5;
-          background:var(--bg2); color:var(--fg);
-          border:1px solid var(--line); border-radius:12px;
-          outline:none; transition: border .2s, box-shadow .2s;
-        }
-        .input:focus{ border-color: color-mix(in oklab, var(--accent) 50%, transparent); box-shadow:0 0 0 4px color-mix(in oklab, var(--accent) 20%, transparent); }
-
-        .actions{display:flex; flex-wrap:wrap; gap:10px; margin-top:12px}
-        .btn{
-          appearance:none; border:1px solid var(--line); background:var(--bg2); color:var(--fg);
-          padding:10px 14px; border-radius:12px; font-weight:600; cursor:pointer;
-          transition: transform .06s ease, background .2s, border-color .2s, box-shadow .2s;
-        }
-        .btn:hover{ transform: translateY(-1px); }
-        .btn:focus-visible{ outline:none; box-shadow:0 0 0 4px color-mix(in oklab, var(--accent) 25%, transparent); }
-        .btn[disabled], .link.disabled{ opacity:.55; cursor:not-allowed; transform:none; }
-        .btn.primary{
-          background:linear-gradient(135deg, color-mix(in oklab, var(--accent) 88%, #fff 0%), color-mix(in oklab, var(--accent-2) 80%, #fff 0%));
-          border-color:transparent; color:#041214;
-        }
-        .link{ text-decoration:none; display:inline-flex; align-items:center; }
-        .kbd{font-size:12px; margin-right:6px; background:rgba(0,0,0,.15); padding:.25rem .45rem; border-radius:6px;}
-        @media (prefers-color-scheme: light){ .kbd{ background:rgba(0,0,0,.06); } }
-
-        .spinner{
-          width:16px; height:16px; margin-right:8px; border-radius:50%;
-          border:2px solid rgba(255,255,255,.8);
-          border-top-color: rgba(255,255,255,.2);
-          animation: spin .85s linear infinite;
-        }
-        @keyframes spin{to{transform: rotate(360deg)}}
-
-        .status{min-height:24px; margin-top:10px}
-        .error{color:var(--danger); font-weight:600}
-        .ok{color:var(--accent);}
-
-        .preview{max-width:960px; margin:18px auto 0;}
-        .preview h2{font-size:18px; margin:0 0 10px; color:var(--sub); font-weight:700; letter-spacing:.2px;}
-        iframe{
-          width:100%; height:560px; background:#fff;
-          border:1px solid var(--line); border-radius:12px; overflow:hidden;
-          box-shadow: var(--shadow);
-        }
-
-        .foot{max-width:960px; margin:24px auto 0; color:var(--sub); font-size:14px}
-      `}</style>
+      <Footer />
     </main>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="mt-10 border-t border-slate-200 bg-slate-50">
+      <div className="mx-auto max-w-4xl px-4 py-8 text-sm text-slate-600">
+        <p>
+          Tip: Keep instructions specific. You can request layout rules, color palettes, sourcing
+          requirements, and per-step photos.
+        </p>
+      </div>
+    </footer>
   );
 }
