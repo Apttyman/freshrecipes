@@ -1,43 +1,29 @@
 // app/api/img/route.ts
-// Robust image fetcher + rehoster with optional page referer support.
-// Usage in HTML: <img src="/api/img?u=IMAGE_URL&p=PAGE_URL" .../>
+// Purpose: Fetch remote image (with proper headers), re-host to Vercel Blob, and 302 to the stable CDN URL.
+// Usage in HTML: <img src="/api/img?u=IMAGE_URL&p=PAGE_URL" ... />
 import type { NextRequest } from "next/server";
 import { put } from "@vercel/blob";
 import crypto from "node:crypto";
 
-export const runtime = "nodejs";
+export const runtime = "nodejs"; // Route Handler on Node runtime.  [oai_citation:1‡Next.js](https://nextjs.org/docs/14/app/building-your-application/rendering/edge-and-nodejs-runtimes?utm_source=chatgpt.com)
 
-// 8 MB guard (tweak as needed)
-const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_BYTES = 8 * 1024 * 1024; // 8MB guard
+const UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
-const PLACEHOLDER_SVG =
-  `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24" viewBox="0 0 32 24">
-     <rect width="32" height="24" fill="#f3f4f6"/>
-     <path d="M7 16l4-5 4 3 4-6 6 8" fill="none" stroke="#9ca3af" stroke-width="2"/>
+const SVG_FALLBACK =
+  `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="36" viewBox="0 0 48 36">
+     <rect width="48" height="36" fill="#f3f4f6"/>
+     <path d="M10 24l6-7 6 5 6-9 10 12" fill="none" stroke="#9ca3af" stroke-width="3"/>
    </svg>`;
 
-function okContentType(ct?: string | null) {
-  // Be tolerant; some CDNs send application/octet-stream
-  return !!ct && /(image\/|application\/octet-stream)/i.test(ct);
-}
-function extFromContentType(ct = "") {
-  if (/png/i.test(ct)) return "png";
-  if (/jpe?g/i.test(ct)) return "jpg";
-  if (/webp/i.test(ct)) return "webp";
-  if (/gif/i.test(ct)) return "gif";
-  if (/avif/i.test(ct)) return "avif";
-  if (/svg/i.test(ct)) return "svg";
-  return "bin";
-}
-
-function parseUrlParam(raw: string | null): string | null {
+function safeUrl(raw: string | null): string | null {
   if (!raw) return null;
   try {
     const u = new URL(raw);
     if (!/^https?:\/\//i.test(u.href)) return null;
     return u.href;
   } catch {
-    // allow already-encoded values
     try {
       const u = new URL(decodeURIComponent(raw));
       return /^https?:\/\//i.test(u.href) ? u.href : null;
@@ -45,6 +31,19 @@ function parseUrlParam(raw: string | null): string | null {
       return null;
     }
   }
+}
+
+function okContentType(ct: string | null) {
+  return !!ct && /(image\/|application\/octet-stream)/i.test(ct);
+}
+function extFromCT(ct = "") {
+  if (/png/i.test(ct)) return "png";
+  if (/jpe?g/i.test(ct)) return "jpg";
+  if (/webp/i.test(ct)) return "webp";
+  if (/gif/i.test(ct)) return "gif";
+  if (/avif/i.test(ct)) return "avif";
+  if (/svg/i.test(ct)) return "svg";
+  return "bin";
 }
 
 async function fetchWithTimeout(url: string, ms = 12000, referer?: string) {
@@ -56,17 +55,12 @@ async function fetchWithTimeout(url: string, ms = 12000, referer?: string) {
       signal: ctl.signal,
       redirect: "follow",
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36",
-        Accept:
-          "image/avif,image/webp,image/apng,image/*;q=0.8,*/*;q=0.5",
+        "User-Agent": UA,
+        Accept: "image/avif,image/webp,image/apng,image/*;q=0.8,*/*;q=0.5",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "identity",
-        // Many origins with hotlink protection require a page referer.
-        ...(referer ? { Referer: referer } : { Referer: new URL(url).origin + "/" }),
-        // Some clouds are picky without a sec-fetch-site
-        "Sec-Fetch-Mode": "no-cors",
-        "Sec-Fetch-Site": "cross-site",
+        // Many CDNs require a page Referer to allow hotlinking.  [oai_citation:2‡Amazon Web Services, Inc.](https://aws.amazon.com/blogs/security/how-to-prevent-hotlinking-by-using-aws-waf-amazon-cloudfront-and-referer-checking/?utm_source=chatgpt.com)
+        ...(referer ? { Referer: referer } : {}),
       },
     });
   } finally {
@@ -75,29 +69,22 @@ async function fetchWithTimeout(url: string, ms = 12000, referer?: string) {
 }
 
 export async function GET(req: NextRequest) {
-  // u = direct image url (required)
-  // p = page url (optional; improves success on hotlink-protected origins)
-  // NOTE: You can also chain: /api/img?u=/api/img?u=...  (we'll unwrap)
-  let u = parseUrlParam(req.nextUrl.searchParams.get("u"));
+  let u = safeUrl(req.nextUrl.searchParams.get("u"));
   if (!u) {
-    // unwrap if someone passed our own endpoint as u
+    // unwrap nested /api/img?u=<encoded> if someone double-proxied
     const raw = req.nextUrl.searchParams.get("u");
-    if (raw) {
-      const match = raw.match(/[?&]u=([^&]+)/);
-      if (match) u = parseUrlParam(decodeURIComponent(match[1]));
-    }
+    const m = raw?.match(/[?&]u=([^&]+)/);
+    if (m) u = safeUrl(decodeURIComponent(m[1]));
   }
-  const page = parseUrlParam(req.nextUrl.searchParams.get("p"));
+  const page = safeUrl(req.nextUrl.searchParams.get("p")); // optional: origin page to satisfy Referer checks
   if (!u) return new Response("missing url", { status: 400 });
 
   try {
-    const res = await fetchWithTimeout(u, 12000, page || undefined);
+    const res = await fetchWithTimeout(u, 12000, page || new URL(u).origin + "/");
     const ct = res.headers.get("content-type") || "";
-
     if (!res.ok || !okContentType(ct) || !res.body) {
-      // graceful fallback – keep layout intact (but you asked to avoid placeholders in content;
-      // this placeholder is only used when the remote is unreachable at fetch-time)
-      return new Response(PLACEHOLDER_SVG, {
+      // Broken/blocked image → return tiny SVG to avoid layout jumps (better UX on iOS).  [oai_citation:3‡Mac Support](https://macosx.com/threads/pictures-on-safari-page-show-up-as-blue-square.294893/?utm_source=chatgpt.com)
+      return new Response(SVG_FALLBACK, {
         headers: {
           "content-type": "image/svg+xml",
           "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
@@ -120,9 +107,9 @@ export async function GET(req: NextRequest) {
     }
     const buf = Buffer.concat(chunks);
     const hash = crypto.createHash("sha1").update(buf).digest("hex");
-    const key = `images/${hash}.${extFromContentType(ct)}`;
+    const key = `images/${hash}.${extFromCT(ct)}`;
 
-    // Re-host to your Blob (permanent, fast, hotlink-safe)
+    // Re-host on Vercel Blob (public) so future loads use your stable CDN URL.  [oai_citation:4‡Vercel](https://vercel.com/docs/vercel-blob/using-blob-sdk?utm_source=chatgpt.com)
     const uploaded = await put(key, buf, {
       access: "public",
       token: process.env.BLOB_READ_WRITE_TOKEN,
@@ -130,7 +117,7 @@ export async function GET(req: NextRequest) {
       addRandomSuffix: false,
     });
 
-    // Redirect the browser to the Blob asset; future loads bypass the origin
+    // 302 to the permanent asset; browser will cache aggressively.
     return new Response(null, {
       status: 302,
       headers: {
@@ -139,7 +126,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch {
-    return new Response(PLACEHOLDER_SVG, {
+    return new Response(SVG_FALLBACK, {
       headers: {
         "content-type": "image/svg+xml",
         "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
