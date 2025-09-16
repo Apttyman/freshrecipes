@@ -14,6 +14,19 @@ const MODEL =
   (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) ||
   "gpt-4o-mini";
 
+const completion = await openai.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [
+    {
+      role: "system",
+      content: "You are a recipe generator. Always return strict valid JSON following this schema: { recipes: Recipe[] }."
+    },
+    { role: "user", content: prompt }
+  ],
+  temperature: 0.7,
+  response_format: { type: "json_object" } // ✅ guarantees valid JSON
+});
+
 // Keep system prompt (requirement #7)
 const SYSTEM_PROMPT = `
 You return structured JSON (not HTML) for recipes, with real, hotlinkable photo URLs and source links.
