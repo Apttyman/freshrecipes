@@ -187,22 +187,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Trust bullets */}
-            <ul className="mt-6 grid grid-cols-1 gap-3 text-sm text-slate-600 md:grid-cols-3">
-              <li className="flex items-center gap-2 rounded-lg bg-slate-50 p-3">
-                <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                Real chef sources
-              </li>
-              <li className="flex items-center gap-2 rounded-lg bg-slate-50 p-3">
-                <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
-                Clean, responsive HTML
-              </li>
-              <li className="flex items-center gap-2 rounded-lg bg-slate-50 p-3">
-                <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
-                Archive to Blob
-              </li>
-            </ul>
-          </div>
+           
 
           {/* Right side illustration / preview card */}
           <div className="relative">
