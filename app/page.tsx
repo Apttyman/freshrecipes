@@ -3,7 +3,26 @@
 
 import { useState } from "react";
 import Link from "next/link";
+function BlobBadge() {
+  const [ok, setOk] = React.useState<boolean | null>(null);
 
+  React.useEffect(() => {
+    fetch("/api/blob-health", { cache: "no-store" })
+      .then(r => r.json())
+      .then(d => setOk(Boolean(d.ok)))
+      .catch(() => setOk(false));
+  }, []);
+
+  const bg = ok == null ? "bg-gray-400" : ok ? "bg-green-500" : "bg-red-500";
+  const label = ok == null ? "Blob…" : ok ? "Blob OK" : "Blob FAIL";
+
+  return (
+    <span className="inline-flex items-center gap-2 text-xs px-2 py-1 rounded-full bg-white/70 border">
+      <span className={`inline-block w-2.5 h-2.5 rounded-full ${bg}`} />
+      {label}
+    </span>
+  );
+}
 type GenResponse = {
   ok: boolean;
   previewHtml?: string;   // full HTML for live preview
