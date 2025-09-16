@@ -55,7 +55,7 @@ function looksLikePlaceholder(u: string) {
     s.includes("dummy") ||
     s.includes("lorem") ||
     s.includes("example.com") ||
-    s.includes("unsplash") || // you said no stock
+    s.includes("unsplash") ||
     s.includes("via.placeholder") ||
     s.endsWith(".svg")
   );
@@ -64,7 +64,6 @@ function looksLikePlaceholder(u: string) {
 async function isGoodImage(url: string, referer: string): Promise<boolean> {
   if (!isHttpUrl(url) || looksLikePlaceholder(url)) return false;
 
-  // HEAD can be blocked, so do a lightweight GET and only read headers
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 8000);
 
@@ -78,7 +77,7 @@ async function isGoodImage(url: string, referer: string): Promise<boolean> {
           "Mozilla/5.0 (compatible; FreshRecipesBot/1.0; +https://freshrecipes.io)",
         Referer: referer,
         Accept: "image/*,*/*;q=0.8",
-        Range: "bytes=0-0", // ask for first byte only; many servers still return headers + small payload
+        Range: "bytes=0-0",
       },
     });
 
@@ -86,7 +85,6 @@ async function isGoodImage(url: string, referer: string): Promise<boolean> {
     const ct = rsp.headers.get("content-type") || "";
     if (!ct.startsWith("image/")) return false;
 
-    // If server ignored Range and sent full body, that's okay — we didn't read it.
     return true;
   } catch {
     return false;
@@ -104,7 +102,6 @@ function proxy(url: string, origin: string) {
 async function verifyAllImages(recipes: any[], origin: string) {
   const referer = origin + "/";
   for (const r of recipes || []) {
-    // Top images
     if (Array.isArray(r.images)) {
       const out: any[] = [];
       for (const im of r.images) {
@@ -114,8 +111,6 @@ async function verifyAllImages(recipes: any[], origin: string) {
       }
       r.images = out;
     }
-
-    // Step images
     if (Array.isArray(r.steps)) {
       r.steps = await Promise.all(
         r.steps.map(async (st: any) => {
@@ -123,7 +118,7 @@ async function verifyAllImages(recipes: any[], origin: string) {
             return { ...st, image: proxy(st.image, origin) };
           }
           const { image, ...rest } = st || {};
-          return rest; // drop bad image, keep text/source
+          return rest;
         })
       );
     }
@@ -145,7 +140,7 @@ export async function POST(req: NextRequest) {
       return new Response("Instruction too long (max 2000)", { status: 413 });
     }
 
-    const model = process.env.OPENAI_MODEL || "gpt-4.1"; // set to your preferred model
+    const model = process.env.OPENAI_MODEL || "gpt-4.1";
 
     const ai = await client.chat.completions.create({
       model,
@@ -153,12 +148,7 @@ export async function POST(req: NextRequest) {
       max_tokens: 4000,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content:
-            "User request (variable; do NOT hardcode '5 pasta'): " +
-            instruction,
-        },
+        { role: "user", content: instruction },
       ],
       response_format: { type: "json_object" as const },
     });
@@ -171,10 +161,7 @@ export async function POST(req: NextRequest) {
       return new Response("Model did not return valid JSON", { status: 502 });
     }
 
-    // Ensure structure exists
     if (!Array.isArray(data.recipes)) data.recipes = [];
-
-    // Verify all images and proxy them
     const origin = req.nextUrl.origin;
     data.recipes = await verifyAllImages(data.recipes, origin);
 
