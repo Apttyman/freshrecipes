@@ -1,6 +1,8 @@
-// app/api/generate/route.ts (DIAGNOSTIC SAFE MODE)
+// app/api/generate/route.ts
 import OpenAI from "openai";
 import type { NextRequest } from "next/server";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -14,114 +16,46 @@ const MODEL =
   (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) ||
   "gpt-4o-mini";
 
-const completion = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
-  messages: [
-    {
-      role: "system",
-      content: "You are a recipe generator. Always return strict valid JSON following this schema: { recipes: Recipe[] }."
-    },
-    { role: "user", content: prompt }
-  ],
-  temperature: 0.7,
-  response_format: { type: "json_object" } // ✅ guarantees valid JSON
-});
-
-// Keep system prompt (requirement #7)
-const SYSTEM_PROMPT = `
-You return structured JSON (not HTML) for recipes, with real, hotlinkable photo URLs and source links.
-Return exactly: {"recipes": Recipe[]} where:
-Recipe = {
-  "title": string,
-  "description": string,
-  "image": string,   // absolute, public image URL of the final dish
-  "source": string,  // canonical page
-  "ingredients": string[],
-  "steps": string[]
-}
-Rules:
-- No placeholders or stock images.
-- Prefer official sources (chef sites or major food publications).
-- Titles ≤ 100 chars. Steps actionable and ordered.
-- Return VALID JSON. No markdown fences.
-`;
-
-function now() { return Date.now(); }
-function ms(start: number) { return `${Date.now() - start}ms`; }
-
-async function verifyUrl(url: string, timeoutMs = 5000): Promise<boolean> {
+// Load your prompt exactly as written (env overrides file if set)
+const PROMPT_PATH = join(process.cwd(), "app", "prompt", "system-prompt.txt");
+function loadSystemPrompt(): string {
+  const envOverride = process.env.RECIPE_SYSTEM_PROMPT?.trim();
+  if (envOverride) return envOverride;
   try {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
-    let res = await fetch(url, { method: "HEAD", signal: ctl.signal });
-    if (!res.ok) {
-      res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal: ctl.signal });
-    }
-    clearTimeout(timer);
-    if (!res || !res.ok) return false;
-    const ct = res.headers.get("content-type") || "";
-    return ct.includes("image") || /\.(png|jpe?g|webp|gif|avif)(\?|#|$)/i.test(url);
+    return readFileSync(PROMPT_PATH, "utf8");
   } catch {
-    return false;
+    return "";
   }
 }
 
-async function verifyAllImages(recipes: any[], origin: string, diag: boolean) {
-  const t0 = now();
-  const MAX_CONCURRENCY = 6;
-  const idxs = [...recipes.keys()];
-  let verified = 0, dropped = 0;
-
-  const workers = Array.from(
-    { length: Math.min(MAX_CONCURRENCY, idxs.length) },
-    async () => {
-      while (idxs.length) {
-        const i = idxs.shift()!;
-        const r = recipes[i] || {};
-        const url = r.image;
-        if (typeof url === "string" && url) {
-          const ok = await verifyUrl(url, 5000);
-          if (ok) {
-            r.image = `${origin}/api/img?u=${encodeURIComponent(url)}`;
-            verified++;
-          } else {
-            delete r.image;
-            dropped++;
-          }
-        }
-      }
-    }
+// post-process: proxy all image URLs through /api/img
+function proxyImages(html: string, origin: string) {
+  // Replace src="http..."; tolerate single/double/no quotes
+  return html.replace(
+    /(<img\b[^>]*\bsrc=)(['"]?)(https?:\/\/[^'">\s)]+)(\2)/gi,
+    (_m, pre, q, url, q2) => `${pre}${q}${origin}/api/img?u=${encodeURIComponent(url)}${q2}`
   );
-  await Promise.allSettled(workers);
-
-  const out = recipes.filter((r) => !!r.title);
-  const detail = diag ? { verifyTime: ms(t0), verified, dropped } : undefined;
-  return { out, detail };
 }
 
 export async function POST(req: NextRequest) {
-  const diag = req.nextUrl.searchParams.get("diag") === "1";
-  const verifyFlag = req.nextUrl.searchParams.get("verify"); // "1"|"0"|null
-  const skipVerify = verifyFlag === "0";
-
-  const tAll = now();
-  const steps: any[] = []; // only returned when diag=1
-
   try {
     if (!process.env.OPENAI_API_KEY) {
       return new Response("OPENAI_API_KEY missing", { status: 500 });
     }
 
-    const tParse = now();
     let body: any = {};
-    try { body = await req.json(); } catch { /* empty body ok for diag */ }
+    try { body = await req.json(); } catch {}
     const instruction = (body?.instruction ?? "").toString().trim();
     if (!instruction) {
       return new Response("Missing 'instruction' string", { status: 400 });
     }
-    if (diag) steps.push({ step: "parse", time: ms(tParse), instructionLen: instruction.length });
 
-    const tAI = now();
+    const SYSTEM_PROMPT = loadSystemPrompt();
+    if (!SYSTEM_PROMPT) {
+      return new Response("System prompt not found", { status: 500 });
+    }
+
+    // IMPORTANT: No response_format=json here — we want rich HTML output.
     const ai = await client.chat.completions.create({
       model: MODEL,
       messages: [
@@ -129,60 +63,32 @@ export async function POST(req: NextRequest) {
         { role: "user", content: instruction },
       ],
       temperature: 0.2,
-      max_tokens: 3500, // keep reasonable
-      response_format: { type: "json_object" as const },
+      // allow enough room for 3–5 recipes w/ multi-paragraph descriptions + CSS
+      max_tokens: 6000,
     });
-    const aiText = ai.choices?.[0]?.message?.content ?? "{}";
-    if (diag) steps.push({ step: "openai", time: ms(tAI), model: MODEL, promptTokens: ai.usage?.prompt_tokens, completionTokens: ai.usage?.completion_tokens });
 
-    const tJSON = now();
-    let data: any = {};
-    try {
-      data = JSON.parse(aiText);
-    } catch (e) {
-      if (diag) steps.push({ step: "json-parse-error", sample: aiText.slice(0, 200) });
-      return new Response("Model did not return valid JSON", { status: 502 });
+    const raw = ai.choices?.[0]?.message?.content ?? "";
+    if (!raw || !raw.trim()) {
+      return new Response("Empty completion", { status: 502 });
     }
-    if (!Array.isArray(data.recipes)) data.recipes = [];
-    data.recipes = data.recipes
-      .map((r: any) => ({
-        title: String(r?.title ?? "").slice(0, 200),
-        image: r?.image ?? "",
-        source: r?.source ?? "",
-        description: r?.description ?? "",
-        ingredients: Array.isArray(r?.ingredients) ? r.ingredients : [],
-        steps: Array.isArray(r?.steps) ? r.steps : [],
-      }))
-      .filter((r: any) => r.title);
-    if (diag) steps.push({ step: "json-normalize", time: ms(tJSON), count: data.recipes.length });
 
+    // Ensure it’s an HTML document (your prompt already asks for a full file)
+    let html = raw.trim();
     const origin = req.nextUrl.origin;
 
-    if (skipVerify) {
-      // Only rewrite existing images to proxy; no HEAD/GET calls
-      const tRewrite = now();
-      data.recipes = data.recipes.map((r: any) =>
-        r.image ? { ...r, image: `${origin}/api/img?u=${encodeURIComponent(r.image)}` } : r
-      );
-      if (diag) steps.push({ step: "rewrite-only", time: ms(tRewrite) });
-    } else {
-      const tVer = now();
-      const v = await verifyAllImages(data.recipes, origin, diag);
-      data.recipes = v.out;
-      if (diag) steps.push({ step: "verify", time: ms(tVer), ...(v.detail || {}) });
+    // Safety: strip any accidental code fences
+    if (html.startsWith("```")) {
+      html = html.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
     }
 
-    if (diag) steps.push({ step: "total", time: ms(tAll) });
+    // Proxy images so they’re reliable from third-party hosts
+    html = proxyImages(html, origin);
 
-    return new Response(
-      JSON.stringify(diag ? { ...data, _diag: steps } : data),
-      { headers: { "content-type": "application/json; charset=utf-8" } }
-    );
-  } catch (e: any) {
-    if (diag) steps.push({ step: "caught", error: String(e?.message || e) });
-    return new Response(
-      diag ? JSON.stringify({ error: "Internal error", _diag: steps }) : "Internal error",
-      { status: 500, headers: { "content-type": diag ? "application/json" : "text/plain" } }
-    );
+    return new Response(html, {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+  } catch (err) {
+    console.error("generate error", err);
+    return new Response("Internal error", { status: 500 });
   }
 }
