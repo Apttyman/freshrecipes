@@ -1,12 +1,14 @@
 // app/api/img/route.ts
+// Robust image fetcher + rehoster with optional page referer support.
+// Usage in HTML: <img src="/api/img?u=IMAGE_URL&p=PAGE_URL" .../>
 import type { NextRequest } from "next/server";
 import { put } from "@vercel/blob";
 import crypto from "node:crypto";
 
 export const runtime = "nodejs";
 
-// 6 MB guard (tweak as desired)
-const MAX_BYTES = 6 * 1024 * 1024;
+// 8 MB guard (tweak as needed)
+const MAX_BYTES = 8 * 1024 * 1024;
 
 const PLACEHOLDER_SVG =
   `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24" viewBox="0 0 32 24">
@@ -15,7 +17,7 @@ const PLACEHOLDER_SVG =
    </svg>`;
 
 function okContentType(ct?: string | null) {
-  // Some servers lie (application/octet-stream). Be tolerant.
+  // Be tolerant; some CDNs send application/octet-stream
   return !!ct && /(image\/|application\/octet-stream)/i.test(ct);
 }
 function extFromContentType(ct = "") {
@@ -28,23 +30,43 @@ function extFromContentType(ct = "") {
   return "bin";
 }
 
-async function fetchWithTimeout(url: string, ms = 10000) {
+function parseUrlParam(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (!/^https?:\/\//i.test(u.href)) return null;
+    return u.href;
+  } catch {
+    // allow already-encoded values
+    try {
+      const u = new URL(decodeURIComponent(raw));
+      return /^https?:\/\//i.test(u.href) ? u.href : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function fetchWithTimeout(url: string, ms = 12000, referer?: string) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms);
   try {
     return await fetch(url, {
-      method: "GET", // many hosts block HEAD/Range
+      method: "GET",
       signal: ctl.signal,
       redirect: "follow",
       headers: {
-        // Be generous: some CDNs block “botty” defaults
         "User-Agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
-        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36",
+        Accept:
+          "image/avif,image/webp,image/apng,image/*;q=0.8,*/*;q=0.5",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "identity",
-        // Some origins only allow “same-site” hotlinks; spoof referer to origin itself
-        Referer: new URL(url).origin + "/",
+        // Many origins with hotlink protection require a page referer.
+        ...(referer ? { Referer: referer } : { Referer: new URL(url).origin + "/" }),
+        // Some clouds are picky without a sec-fetch-site
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
       },
     });
   } finally {
@@ -53,25 +75,28 @@ async function fetchWithTimeout(url: string, ms = 10000) {
 }
 
 export async function GET(req: NextRequest) {
-  const raw = req.nextUrl.searchParams.get("u");
-  if (!raw) return new Response("missing url", { status: 400 });
-
-  // Allow proxy-chaining (if someone passed our own /api/img?u=...)
-  let u = raw;
-  try {
-    const maybe = new URL(raw, "http://x");
-    const inner = maybe.searchParams.get("u");
-    if (inner && /^https?:\/\//i.test(inner)) u = inner;
-  } catch {
-    /* ignore */
+  // u = direct image url (required)
+  // p = page url (optional; improves success on hotlink-protected origins)
+  // NOTE: You can also chain: /api/img?u=/api/img?u=...  (we'll unwrap)
+  let u = parseUrlParam(req.nextUrl.searchParams.get("u"));
+  if (!u) {
+    // unwrap if someone passed our own endpoint as u
+    const raw = req.nextUrl.searchParams.get("u");
+    if (raw) {
+      const match = raw.match(/[?&]u=([^&]+)/);
+      if (match) u = parseUrlParam(decodeURIComponent(match[1]));
+    }
   }
-  if (!/^https?:\/\//i.test(u)) return new Response("bad url", { status: 400 });
+  const page = parseUrlParam(req.nextUrl.searchParams.get("p"));
+  if (!u) return new Response("missing url", { status: 400 });
 
   try {
-    const res = await fetchWithTimeout(u, 10000);
+    const res = await fetchWithTimeout(u, 12000, page || undefined);
     const ct = res.headers.get("content-type") || "";
-    if (!res.ok || !okContentType(ct)) {
-      // graceful placeholder (never break layout)
+
+    if (!res.ok || !okContentType(ct) || !res.body) {
+      // graceful fallback – keep layout intact (but you asked to avoid placeholders in content;
+      // this placeholder is only used when the remote is unreachable at fetch-time)
       return new Response(PLACEHOLDER_SVG, {
         headers: {
           "content-type": "image/svg+xml",
@@ -80,34 +105,36 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Buffer with size guard so we don’t blow memory on huge files
-    const reader = res.body!.getReader();
+    // Stream to buffer with size guard
+    const reader = res.body.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
     while (true) {
-      const { done, value } = await reader.read();
+      const { value, done } = await reader.read();
       if (done) break;
-      total += value.byteLength;
-      if (total > MAX_BYTES) throw new Error("image too large");
-      chunks.push(value);
+      if (value) {
+        total += value.byteLength;
+        if (total > MAX_BYTES) throw new Error("image too large");
+        chunks.push(value);
+      }
     }
     const buf = Buffer.concat(chunks);
-
-    // Hash + write to Blob; then redirect to the permanent blob URL
     const hash = crypto.createHash("sha1").update(buf).digest("hex");
     const key = `images/${hash}.${extFromContentType(ct)}`;
-    const { url: blobUrl } = await put(key, buf, {
+
+    // Re-host to your Blob (permanent, fast, hotlink-safe)
+    const uploaded = await put(key, buf, {
       access: "public",
       token: process.env.BLOB_READ_WRITE_TOKEN,
       contentType: ct || "application/octet-stream",
       addRandomSuffix: false,
     });
 
-    // 302 so the browser swaps to your Blob domain for all subsequent loads
+    // Redirect the browser to the Blob asset; future loads bypass the origin
     return new Response(null, {
       status: 302,
       headers: {
-        Location: blobUrl,
+        Location: uploaded.url,
         "cache-control": "public, max-age=31536000, immutable",
       },
     });
