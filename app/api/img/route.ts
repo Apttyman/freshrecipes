@@ -2,55 +2,40 @@
 import { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
+  const url = req.nextUrl.searchParams.get("url");
+  if (!url) return new Response("Missing url", { status: 400 });
+
   try {
-    const u = req.nextUrl.searchParams.get("u");
-    if (!u) return new Response("Missing u", { status: 400 });
-
-    // only allow https and absolute URLs
-    let url: URL;
-    try {
-      url = new URL(u);
-      if (url.protocol !== "https:") {
-        return new Response("Only https URLs are allowed", { status: 400 });
-      }
-    } catch {
-      return new Response("Bad URL", { status: 400 });
-    }
-
-    // fetch the image from the source
-    const rsp = await fetch(url.toString(), {
-      // some sites require a user-agent and no referer to allow fetching
+    const rsp = await fetch(url, {
       headers: {
-        "user-agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
-        // don't forward your origin; avoids hotlink referer checks
-        referer: "",
+        // reduce blocks from some origins
+        "User-Agent":
+          "Mozilla/5.0 (compatible; FreshRecipesBot/1.0; +https://freshrecipes.io)",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Referer": new URL(url).origin + "/",
       },
-      // allow redirects (many CDNs 302)
       redirect: "follow",
-      // cache on Vercel’s edge for a bit
-      next: { revalidate: 60 * 60 },
+      cache: "no-store",
     });
 
     if (!rsp.ok) {
       return new Response(`Upstream ${rsp.status}`, { status: 502 });
     }
 
-    // stream back with original content-type + long cache
-    const headers = new Headers(rsp.headers);
-    headers.set("cache-control", "public, max-age=86400, s-maxage=86400");
-    headers.delete("content-security-policy");
-    headers.delete("content-security-policy-report-only");
+    const ct = rsp.headers.get("content-type") || "";
+    if (!ct.startsWith("image/")) {
+      return new Response("Not an image", { status: 415 });
+    }
 
-    return new Response(rsp.body, {
-      status: 200,
-      headers,
-    });
-  } catch (err) {
-    console.error("IMG_PROXY_ERROR:", err);
-    return new Response("Image proxy error", { status: 500 });
+    // stream through
+    const headers = new Headers();
+    headers.set("Content-Type", ct);
+    headers.set("Cache-Control", "public, max-age=86400, s-maxage=86400");
+    headers.set("Access-Control-Allow-Origin", "*");
+    return new Response(rsp.body, { headers });
+  } catch (e: any) {
+    return new Response("Proxy error", { status: 500 });
   }
 }
