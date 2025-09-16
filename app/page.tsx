@@ -206,38 +206,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature cards (soft, minimalist) */}
-      <section className="bg-white">
-        <div className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-4 py-10 md:grid-cols-3">
-          {[
-            {
-              title: "Chef-first content",
-              desc:
-                "We attribute, cite, and mirror the chef’s voice — with rich context and culinary history.",
-            },
-            {
-              title: "Polished UI shell",
-              desc:
-                "Elegant, magazine-quality layout: large serif titles, clean sans for body, subtle dividers.",
-            },
-            {
-              title: "Reliable images",
-              desc:
-                "We proxy images through the app to avoid hotlink failures. Archives can re-host to Blob.",
-            },
-          ].map((f, i) => (
-            <div
-              key={i}
-              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-            >
-              <h3 className="text-base font-semibold text-slate-900">
-                {f.title}
-              </h3>
-              <p className="mt-2 text-sm text-slate-600">{f.desc}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+
 
       {/* FAQ (kept concise; no “formatting suggestions” language anywhere) */}
       <section className="border-t border-black/5 bg-white">
