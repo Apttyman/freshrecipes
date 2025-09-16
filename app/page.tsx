@@ -1,41 +1,59 @@
+// app/page.tsx
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 
-interface Recipe {
-  id: string;
-  name: string;
-  chef: string;
-  description: string[];
-  ingredients: string[];
-  steps: { text: string; image?: string; source?: string }[];
-  sourceUrl: string;
-  images: { url: string; alt: string; source: string }[];
-}
+type GenResponse = {
+  ok: boolean;
+  previewHtml?: string;   // full HTML for live preview
+  blobUrl?: string;       // public Vercel Blob URL of saved file
+  pageUrl?: string;       // same as blobUrl (alias), or a routed URL if you add one
+  filename?: string;      // e.g. recipes/2025-03-10_12-01-22_cacio-e-pepe.html
+  error?: string;
+};
 
 export default function HomePage() {
   const [instruction, setInstruction] = useState("");
   const [loading, setLoading] = useState(false);
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // preview state
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [pageUrl, setPageUrl] = useState<string | null>(null);
+  const [filename, setFilename] = useState<string | null>(null);
 
   async function handleGenerate() {
     setLoading(true);
-    setError("");
+    setError(null);
+    setPreviewHtml(null);
+    setPageUrl(null);
+    setFilename(null);
+
     try {
       const rsp = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instruction }),
       });
+
+      // If your route streams errors, capture body text for clarity
       if (!rsp.ok) {
         const txt = await rsp.text();
-        throw new Error(txt);
+        throw new Error(txt || `Request failed with ${rsp.status}`);
       }
-      const data = await rsp.json();
-      setRecipes(data.recipes || []);
-    } catch (err: any) {
-      setError(err.message || "Failed to generate recipes");
+
+      const data = (await rsp.json()) as GenResponse;
+
+      if (!data.ok) {
+        throw new Error(data.error || "Generation failed.");
+      }
+
+      setPreviewHtml(data.previewHtml || null);
+      setPageUrl(data.pageUrl || data.blobUrl || null);
+      setFilename(data.filename || null);
+    } catch (e: any) {
+      setError(e?.message || "Failed to generate.");
     } finally {
       setLoading(false);
     }
@@ -45,92 +63,89 @@ export default function HomePage() {
     <main className="min-h-screen bg-[#faf8f5] text-gray-900 p-6">
       {/* Header */}
       <header className="flex justify-between items-center mb-8">
-        <h1 className="text-4xl font-serif">Fresh Recipes</h1>
-        <a
+        <h1 className="text-4xl font-serif tracking-tight">Fresh Recipes</h1>
+        <Link
           href="/archive"
-          className="px-4 py-2 bg-[#c76d4e] text-white rounded hover:bg-[#a85539]"
+          className="px-4 py-2 rounded bg-[#c76d4e] text-white hover:bg-[#a85539] transition"
         >
           Previous Recipes
-        </a>
+        </Link>
       </header>
 
-      {/* Input */}
-      <div className="mb-6 flex gap-2">
-        <input
+      {/* Instruction input + CTA */}
+      <section className="mb-6 grid gap-3">
+        <label className="text-sm font-medium text-gray-700">Your instruction</label>
+        <textarea
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder="e.g. 3 French desserts"
-          className="flex-1 border rounded px-3 py-2"
+          placeholder='e.g. "Fetch 5 rice recipes from top Canadian chefs"'
+          className="w-full min-h-[100px] border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#5c7c6d] bg-white"
         />
-        <button
-          onClick={handleGenerate}
-          disabled={loading}
-          className="px-4 py-2 bg-[#5c7c6d] text-white rounded hover:bg-[#476253]"
-        >
-          {loading ? "Generating..." : "Generate"}
-        </button>
-      </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleGenerate}
+            disabled={loading || !instruction.trim()}
+            className="px-4 py-2 rounded bg-[#5c7c6d] text-white hover:bg-[#476253] disabled:opacity-50"
+          >
+            {loading ? "Generating…" : "Generate"}
+          </button>
+
+          {pageUrl && (
+            <>
+              <a
+                href={pageUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-4 py-2 rounded border border-gray-300 hover:bg-gray-50"
+                title="Open the saved page"
+              >
+                Open page
+              </a>
+              <a
+                href={pageUrl}
+                download={filename ?? "recipe.html"}
+                className="px-4 py-2 rounded border border-gray-300 hover:bg-gray-50"
+                title="Download the HTML"
+              >
+                Download .html
+              </a>
+            </>
+          )}
+        </div>
+        <p className="text-xs text-gray-500">
+          Tip: Keep instructions specific. You can request layout rules, color palettes, and sourcing requirements.
+        </p>
+      </section>
 
       {/* Error */}
-      {error && <p className="text-red-600 mb-4">{error}</p>}
+      {error && (
+        <div className="mb-6 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
-      {/* Recipes */}
-      <section className="grid gap-8 md:grid-cols-2">
-        {recipes.map((recipe) => (
-          <article
-            key={recipe.id}
-            className="bg-white shadow rounded p-6 border"
-          >
-            <h2 className="text-2xl font-serif mb-2">
-              <a href={recipe.sourceUrl} target="_blank" rel="noopener noreferrer">
-                {recipe.name}
-              </a>
-            </h2>
-            <p className="italic text-gray-600 mb-2">By {recipe.chef}</p>
-
-            {recipe.images[0] && (
-              <a href={recipe.images[0].source} target="_blank" rel="noopener noreferrer">
-                <img
-                  src={recipe.images[0].url}
-                  alt={recipe.images[0].alt}
-                  className="w-full h-64 object-cover rounded mb-4"
-                />
-              </a>
-            )}
-
-            {recipe.description.map((para, i) => (
-              <p key={i} className="mb-2 text-sm leading-relaxed">
-                {para}
-              </p>
-            ))}
-
-            <h3 className="text-lg font-semibold mt-4 mb-2">Ingredients</h3>
-            <ul className="list-disc list-inside text-sm space-y-1">
-              {recipe.ingredients.map((ing, i) => (
-                <li key={i}>{ing}</li>
-              ))}
-            </ul>
-
-            <h3 className="text-lg font-semibold mt-4 mb-2">Steps</h3>
-            <ol className="list-decimal list-inside text-sm space-y-2">
-              {recipe.steps.map((step, i) => (
-                <li key={i}>
-                  <p>{step.text}</p>
-                  {step.image && (
-                    <a href={step.source} target="_blank" rel="noopener noreferrer">
-                      <img
-                        src={step.image}
-                        alt={`Step ${i + 1}`}
-                        className="w-full h-48 object-cover rounded mt-2"
-                      />
-                    </a>
-                  )}
-                </li>
-              ))}
-            </ol>
-          </article>
-        ))}
-      </section>
+      {/* Live Preview */}
+      {previewHtml ? (
+        <section className="rounded-xl border border-gray-200 shadow bg-white overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+            <h2 className="font-semibold">Live Preview</h2>
+            {filename && <span className="text-xs text-gray-500">{filename}</span>}
+          </div>
+          <div className="h-[70vh]">
+            {/* Use an iframe with srcDoc so the HTML is fully isolated and styled as-is */}
+            <iframe
+              title="Recipe Preview"
+              className="w-full h-full"
+              srcDoc={previewHtml}
+              sandbox="allow-same-origin allow-popups allow-forms allow-scripts"
+            />
+          </div>
+        </section>
+      ) : (
+        <section className="rounded-lg border border-dashed border-gray-300 p-6 text-sm text-gray-500">
+          Your generated page will preview here.
+        </section>
+      )}
     </main>
   );
 }
