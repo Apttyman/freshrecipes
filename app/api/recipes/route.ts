@@ -10,7 +10,14 @@ export async function GET() {
       token: process.env.BLOB_READ_WRITE_TOKEN,
     });
 
-    blobs.sort((a, b) => (b.uploadedAt ?? 0) - (a.uploadedAt ?? 0));
+    // Coerce uploadedAt (string | number | undefined) → number
+    const toTs = (v: unknown): number => {
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      const n = Date.parse(String(v ?? ""));
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    blobs.sort((a, b) => toTs(b.uploadedAt as any) - toTs(a.uploadedAt as any));
 
     return new Response(
       JSON.stringify({
@@ -18,12 +25,13 @@ export async function GET() {
           key: b.pathname,
           url: b.url,
           size: b.size,
-          uploadedAt: b.uploadedAt,
+          uploadedAt: toTs(b.uploadedAt as any),
         })),
       }),
-      { headers: { "Content-Type": "application/json" } }
+      { headers: { "content-type": "application/json; charset=utf-8" } }
     );
-  } catch (err: any) {
-    return new Response("Error listing blobs: " + err.message, { status: 500 });
+  } catch (e: any) {
+    console.error("recipes route error:", e);
+    return new Response("Failed to list recipes", { status: 500 });
   }
 }
