@@ -28,13 +28,55 @@ function loadSystemPrompt(): string {
   }
 }
 
-// post-process: proxy all image URLs through /api/img
+/**
+ * Proxy a single absolute image URL through /api/img with a best-effort Referer (&p=).
+ * - Skips if already pointing at /api/img
+ * - Guesses referer as the image origin (https://host/)
+ */
+function makeProxy(url: string, origin: string): string {
+  try {
+    if (!/^https?:\/\//i.test(url)) return url; // only handle absolute http(s)
+    const u = new URL(url);
+    // Already proxied? leave as-is
+    if (u.pathname.startsWith("/api/img") || /\/api\/img/i.test(u.pathname)) return url;
+    const refererGuess = `${u.origin}/`;
+    return `${origin}/api/img?u=${encodeURIComponent(u.href)}&p=${encodeURIComponent(refererGuess)}`;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Rewrites all <img src=...> and srcset=... entries to go through /api/img
+ * - Handles single/double/no quotes around src
+ * - Handles multiple candidates in srcset
+ */
 function proxyImages(html: string, origin: string) {
-  // Replace src="http..."; tolerate single/double/no quotes
-  return html.replace(
+  // 1) src attributes
+  const withSrc = html.replace(
     /(<img\b[^>]*\bsrc=)(['"]?)(https?:\/\/[^'">\s)]+)(\2)/gi,
-    (_m, pre, q, url, q2) => `${pre}${q}${origin}/api/img?u=${encodeURIComponent(url)}${q2}`
+    (_m, pre, q, url, q2) => `${pre}${q}${makeProxy(url, origin)}${q2}`
   );
+
+  // 2) srcset attributes (comma-separated list of URLs with descriptors)
+  const withSrcset = withSrc.replace(
+    /(<img\b[^>]*\bsrcset=)(['"])([^'"]+)\2/gi,
+    (_m, pre, q, list) => {
+      const rewritten = list
+        .split(",")
+        .map(part => {
+          const seg = part.trim();
+          if (!seg) return seg;
+          const [u, desc] = seg.split(/\s+/, 2);
+          const proxied = makeProxy(u, origin);
+          return desc ? `${proxied} ${desc}` : proxied;
+        })
+        .join(", ");
+      return `${pre}${q}${rewritten}${q}`;
+    }
+  );
+
+  return withSrcset;
 }
 
 export async function POST(req: NextRequest) {
@@ -55,7 +97,7 @@ export async function POST(req: NextRequest) {
       return new Response("System prompt not found", { status: 500 });
     }
 
-    // IMPORTANT: No response_format=json here — we want rich HTML output.
+    // IMPORTANT: We want rich, full HTML—NO JSON mode here.
     const ai = await client.chat.completions.create({
       model: MODEL,
       messages: [
@@ -63,25 +105,24 @@ export async function POST(req: NextRequest) {
         { role: "user", content: instruction },
       ],
       temperature: 0.2,
-      // allow enough room for 3–5 recipes w/ multi-paragraph descriptions + CSS
+      // Room for multi-recipe, multi-paragraph, CSS-styled output
       max_tokens: 6000,
     });
 
-    const raw = ai.choices?.[0]?.message?.content ?? "";
-    if (!raw || !raw.trim()) {
+    let html = ai.choices?.[0]?.message?.content ?? "";
+    if (!html || !html.trim()) {
       return new Response("Empty completion", { status: 502 });
     }
 
-    // Ensure it’s an HTML document (your prompt already asks for a full file)
-    let html = raw.trim();
-    const origin = req.nextUrl.origin;
+    html = html.trim();
 
-    // Safety: strip any accidental code fences
+    // Safety: strip accidental code fences
     if (html.startsWith("```")) {
       html = html.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
     }
 
-    // Proxy images so they’re reliable from third-party hosts
+    // Proxy images so they’re reliable from third-party hosts (with &p= referer guess)
+    const origin = req.nextUrl.origin;
     html = proxyImages(html, origin);
 
     return new Response(html, {
