@@ -1,4 +1,4 @@
-// app/api/generate/route.ts
+// app/api/generate/route.ts (DIAGNOSTIC SAFE MODE)
 import OpenAI from "openai";
 import type { NextRequest } from "next/server";
 
@@ -10,64 +10,54 @@ const client = new OpenAI({
   baseURL: process.env.OPENAI_API_BASE || undefined,
 });
 
-// Prefer env, fall back to a fast JSON-capable model
 const MODEL =
   (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) ||
   "gpt-4o-mini";
 
-/**
- * Keep the system prompt in the route (per requirement #7)
- */
+// Keep system prompt (requirement #7)
 const SYSTEM_PROMPT = `
 You return structured JSON (not HTML) for recipes, with real, hotlinkable photo URLs and source links.
-Return an object {"recipes": Recipe[]} where Recipe = {
+Return exactly: {"recipes": Recipe[]} where:
+Recipe = {
   "title": string,
   "description": string,
-  "image": string,            // absolute URL to a real image on the open web
-  "source": string,           // canonical page for the recipe
+  "image": string,   // absolute, public image URL of the final dish
+  "source": string,  // canonical page
   "ingredients": string[],
   "steps": string[]
 }
 Rules:
-- No placeholder or stock images. Use only images that depict the final dish.
-- Prefer official/authoritative sources (chef sites, major food pubs).
-- Titles should be concise (<= 100 chars).
-- Steps should be actionable and numbered in the data array order.
-- Absolutely return valid JSON. Do not include markdown fences.
+- No placeholders or stock images.
+- Prefer official sources (chef sites or major food publications).
+- Titles ≤ 100 chars. Steps actionable and ordered.
+- Return VALID JSON. No markdown fences.
 `;
 
-/** Image verification with timeout and HEAD→GET fallback */
+function now() { return Date.now(); }
+function ms(start: number) { return `${Date.now() - start}ms`; }
+
 async function verifyUrl(url: string, timeoutMs = 5000): Promise<boolean> {
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
-
-    // Some hosts block HEAD; try HEAD then tiny GET
     let res = await fetch(url, { method: "HEAD", signal: ctl.signal });
     if (!res.ok) {
-      res = await fetch(url, {
-        headers: { Range: "bytes=0-0" },
-        signal: ctl.signal,
-      });
+      res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal: ctl.signal });
     }
-
     clearTimeout(timer);
     if (!res || !res.ok) return false;
-
     const ct = res.headers.get("content-type") || "";
-    return (
-      ct.includes("image") ||
-      /\.(png|jpe?g|webp|gif|avif)(\?|#|$)/i.test(url)
-    );
+    return ct.includes("image") || /\.(png|jpe?g|webp|gif|avif)(\?|#|$)/i.test(url);
   } catch {
     return false;
   }
 }
 
-/** Verify/Proxy all recipe images concurrently, non-fatal on failures */
-async function verifyAllImages(recipes: any[], origin: string) {
+async function verifyAllImages(recipes: any[], origin: string, diag: boolean) {
+  const t0 = now();
   const MAX_CONCURRENCY = 6;
   const idxs = [...recipes.keys()];
+  let verified = 0, dropped = 0;
 
   const workers = Array.from(
     { length: Math.min(MAX_CONCURRENCY, idxs.length) },
@@ -76,44 +66,49 @@ async function verifyAllImages(recipes: any[], origin: string) {
         const i = idxs.shift()!;
         const r = recipes[i] || {};
         const url = r.image;
-        if (typeof url === "string" && url.length > 0) {
+        if (typeof url === "string" && url) {
           const ok = await verifyUrl(url, 5000);
           if (ok) {
             r.image = `${origin}/api/img?u=${encodeURIComponent(url)}`;
+            verified++;
           } else {
-            // Don’t fail the whole response—just drop the image
             delete r.image;
+            dropped++;
           }
         }
       }
     }
   );
-
   await Promise.allSettled(workers);
-  // If your UI requires images, filter here; otherwise keep all with titles
-  return recipes.filter((r) => !!r.title);
+
+  const out = recipes.filter((r) => !!r.title);
+  const detail = diag ? { verifyTime: ms(t0), verified, dropped } : undefined;
+  return { out, detail };
 }
 
 export async function POST(req: NextRequest) {
+  const diag = req.nextUrl.searchParams.get("diag") === "1";
+  const verifyFlag = req.nextUrl.searchParams.get("verify"); // "1"|"0"|null
+  const skipVerify = verifyFlag === "0";
+
+  const tAll = now();
+  const steps: any[] = []; // only returned when diag=1
+
   try {
     if (!process.env.OPENAI_API_KEY) {
       return new Response("OPENAI_API_KEY missing", { status: 500 });
     }
-    if (!MODEL) {
-      return new Response("OpenAI model not configured", { status: 500 });
-    }
 
-    const { instruction } = await req.json();
-    const prompt = (instruction || "").toString().trim();
-    if (!prompt || typeof prompt !== "string") {
+    const tParse = now();
+    let body: any = {};
+    try { body = await req.json(); } catch { /* empty body ok for diag */ }
+    const instruction = (body?.instruction ?? "").toString().trim();
+    if (!instruction) {
       return new Response("Missing 'instruction' string", { status: 400 });
     }
-    if (prompt.length > 2000) {
-      return new Response("Instruction too long (max 2000 chars)", {
-        status: 400,
-      });
-    }
+    if (diag) steps.push({ step: "parse", time: ms(tParse), instructionLen: instruction.length });
 
+    const tAI = now();
     const ai = await client.chat.completions.create({
       model: MODEL,
       messages: [
@@ -121,20 +116,21 @@ export async function POST(req: NextRequest) {
         { role: "user", content: instruction },
       ],
       temperature: 0.2,
-      max_tokens: 4000,
+      max_tokens: 3500, // keep reasonable
       response_format: { type: "json_object" as const },
     });
+    const aiText = ai.choices?.[0]?.message?.content ?? "{}";
+    if (diag) steps.push({ step: "openai", time: ms(tAI), model: MODEL, promptTokens: ai.usage?.prompt_tokens, completionTokens: ai.usage?.completion_tokens });
 
-    const txt = ai.choices?.[0]?.message?.content ?? "{}";
+    const tJSON = now();
     let data: any = {};
     try {
-      data = JSON.parse(txt);
-    } catch {
+      data = JSON.parse(aiText);
+    } catch (e) {
+      if (diag) steps.push({ step: "json-parse-error", sample: aiText.slice(0, 200) });
       return new Response("Model did not return valid JSON", { status: 502 });
     }
-
     if (!Array.isArray(data.recipes)) data.recipes = [];
-    // Normalize to avoid downstream crashes
     data.recipes = data.recipes
       .map((r: any) => ({
         title: String(r?.title ?? "").slice(0, 200),
@@ -145,15 +141,35 @@ export async function POST(req: NextRequest) {
         steps: Array.isArray(r?.steps) ? r.steps : [],
       }))
       .filter((r: any) => r.title);
+    if (diag) steps.push({ step: "json-normalize", time: ms(tJSON), count: data.recipes.length });
 
     const origin = req.nextUrl.origin;
-    data.recipes = await verifyAllImages(data.recipes, origin);
 
-    return new Response(JSON.stringify(data), {
-      headers: { "content-type": "application/json; charset=utf-8" },
-    });
+    if (skipVerify) {
+      // Only rewrite existing images to proxy; no HEAD/GET calls
+      const tRewrite = now();
+      data.recipes = data.recipes.map((r: any) =>
+        r.image ? { ...r, image: `${origin}/api/img?u=${encodeURIComponent(r.image)}` } : r
+      );
+      if (diag) steps.push({ step: "rewrite-only", time: ms(tRewrite) });
+    } else {
+      const tVer = now();
+      const v = await verifyAllImages(data.recipes, origin, diag);
+      data.recipes = v.out;
+      if (diag) steps.push({ step: "verify", time: ms(tVer), ...(v.detail || {}) });
+    }
+
+    if (diag) steps.push({ step: "total", time: ms(tAll) });
+
+    return new Response(
+      JSON.stringify(diag ? { ...data, _diag: steps } : data),
+      { headers: { "content-type": "application/json; charset=utf-8" } }
+    );
   } catch (e: any) {
-    console.error("generate error", e);
-    return new Response("Internal error", { status: 500 });
+    if (diag) steps.push({ step: "caught", error: String(e?.message || e) });
+    return new Response(
+      diag ? JSON.stringify({ error: "Internal error", _diag: steps }) : "Internal error",
+      { status: 500, headers: { "content-type": diag ? "application/json" : "text/plain" } }
+    );
   }
 }
