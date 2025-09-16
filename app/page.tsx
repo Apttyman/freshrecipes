@@ -95,7 +95,7 @@ export default function Home() {
       const res = await fetch("/api/save", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ html, images }),
+        body: JSON.stringify({ html, images, query: instruction }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || "Save failed");
