@@ -49,10 +49,8 @@ export default function Home() {
     );
   }, [health]);
 
-  // Extract absolute image URLs from returned HTML
   function extractImageUrls(docHtml: string): string[] {
     const urls = new Set<string>();
-    // capture src="http..." or src='http...' or src=http...
     const re = /<img[^>]*\bsrc=(['"]?)(https?:\/\/[^'">\s)]+)\1/gi;
     let m: RegExpExecArray | null;
     while ((m = re.exec(docHtml))) urls.add(m[2]);
@@ -74,11 +72,10 @@ export default function Home() {
 
       setHtml(txt);
 
-      // Open a preview tab immediately (nice on mobile too)
+      // Preview in a new tab
       const blob = new Blob([txt], { type: "text/html;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank", "noopener,noreferrer");
-      // do not revoke immediately; let the user view the tab
     } catch (e: any) {
       setError(e?.message || "Generate failed");
     } finally {
@@ -95,11 +92,11 @@ export default function Home() {
       const res = await fetch("/api/save", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        // include query so archive can show description
         body: JSON.stringify({ html, images, query: instruction }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || "Save failed");
-      // Open the blob URL
       if (data?.url) window.open(data.url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
       setError(e?.message || "Save failed");
@@ -131,84 +128,61 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Hero (Panda7-like: calm, confident, conversion-focused) */}
-      <section className="relative isolate overflow-hidden border-b border-black/5 bg-white">
-        <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-10 px-4 py-12 md:grid-cols-2 md:py-16">
-          <div>
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-              <span className="h-2 w-2 rounded-full bg-blue-500" />
-              Chef-authored recipes · Polished HTML output
-            </div>
-            <h1 className="mt-2 text-4xl font-extrabold tracking-tight text-slate-900 md:text-5xl">
-              Generate editorial-quality recipe pages in one click.
-            </h1>
-            <p className="mt-4 max-w-prose text-base leading-7 text-slate-600">
-              Paste a clear directive (e.g., “3 iconic Peruvian chicken recipes
-              from renowned chefs”). We’ll fetch, compose, and return a complete
-              HTML page styled like a premium food magazine — ready to publish
-              and archive.
-            </p>
+      {/* Hero + Generator only */}
+      <section className="relative overflow-hidden border-b border-black/5 bg-white">
+        <div className="mx-auto max-w-4xl px-4 py-12 md:py-16">
+          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+            <span className="h-2 w-2 rounded-full bg-blue-500" />
+            Chef-authored recipes · Polished HTML output
+          </div>
+          <h1 className="mt-2 text-4xl font-extrabold tracking-tight text-slate-900 md:text-5xl">
+            Generate editorial-quality recipe pages in one click.
+          </h1>
+          <p className="mt-4 max-w-prose text-base leading-7 text-slate-600">
+            Paste a directive (e.g., “3 iconic Peruvian chicken recipes from
+            renowned chefs”). You’ll get a complete HTML page styled to your
+            spec — ready to preview and archive.
+          </p>
 
-            {/* Generator form */}
-            <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <label
-                htmlFor="instruction"
-                className="mb-2 block text-sm font-semibold text-slate-800"
+          {/* Generator form */}
+          <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <label
+              htmlFor="instruction"
+              className="mb-2 block text-sm font-semibold text-slate-800"
+            >
+              What should we fetch &amp; render?
+            </label>
+            <textarea
+              id="instruction"
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              placeholder='Example: "3 authentic Peruvian chicken recipes by well-known chefs, with step images if available."'
+              className="h-28 w-full resize-vertical rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 outline-none ring-0 placeholder:text-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-200"
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                onClick={onGenerate}
+                disabled={loading || !instruction.trim()}
+                className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                What should we fetch &amp; render?
-              </label>
-              <textarea
-                id="instruction"
-                value={instruction}
-                onChange={(e) => setInstruction(e.target.value)}
-                placeholder='Example: "3 authentic Peruvian chicken recipes by well-known chefs, with step images if available."'
-                className="h-28 w-full resize-vertical rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 outline-none ring-0 placeholder:text-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-200"
-              />
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <button
-                  onClick={onGenerate}
-                  disabled={loading || !instruction.trim()}
-                  className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {loading ? "Generating…" : "Generate HTML"}
-                </button>
-                <button
-                  onClick={onSave}
-                  disabled={saving || !html}
-                  className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {saving ? "Saving…" : "Save to Archive"}
-                </button>
-                {error && (
-                  <span className="text-sm font-medium text-rose-600">
-                    {error}
-                  </span>
-                )}
-              </div>
-            </div>
-
-           
-
-          {/* Right side illustration / preview card */}
-          <div className="relative">
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-lg">
-              <div className="aspect-[4/3] w-full rounded-lg bg-gradient-to-br from-slate-50 to-slate-100 ring-1 ring-inset ring-slate-200" />
-              <div className="mt-4 space-y-2">
-                <div className="h-3 w-5/6 rounded bg-slate-100" />
-                <div className="h-3 w-4/6 rounded bg-slate-100" />
-                <div className="h-3 w-3/6 rounded bg-slate-100" />
-              </div>
-            </div>
-            <div className="pointer-events-none absolute -left-6 -top-6 hidden rounded-xl bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200 md:block">
-              No-code output
+                {loading ? "Generating…" : "Generate HTML"}
+              </button>
+              <button
+                onClick={onSave}
+                disabled={saving || !html}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? "Saving…" : "Save to Archive"}
+              </button>
+              {error && (
+                <span className="text-sm font-medium text-rose-600">{error}</span>
+              )}
             </div>
           </div>
         </div>
       </section>
 
-
-
-      {/* FAQ (kept concise; no “formatting suggestions” language anywhere) */}
+      {/* FAQ only (kept) */}
       <section className="border-t border-black/5 bg-white">
         <div className="mx-auto max-w-4xl px-4 py-12">
           <h2 className="text-2xl font-bold text-slate-900">FAQ</h2>
@@ -220,7 +194,7 @@ export default function Home() {
               </summary>
               <p className="mt-2 text-sm text-slate-600">
                 After you click <em>Generate HTML</em>, a new tab opens with the
-                full page. You can save it to the Archive anytime.
+                full page. You can then save it to the Archive.
               </p>
             </details>
             <details className="group py-4">
@@ -247,7 +221,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Footer — no language inviting the user to change formatting */}
       <footer className="border-t border-black/5 bg-white">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-8 text-center md:flex-row md:text-left">
           <p className="text-sm text-slate-500">
