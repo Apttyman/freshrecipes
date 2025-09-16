@@ -5,125 +5,93 @@ import type { NextRequest } from "next/server";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_API_BASE || undefined,
+});
 
+// Prefer env, fall back to a fast JSON-capable model
+const MODEL =
+  (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) ||
+  "gpt-4o-mini";
+
+/**
+ * Keep the system prompt in the route (per requirement #7)
+ */
 const SYSTEM_PROMPT = `
 You return structured JSON (not HTML) for recipes, with real, hotlinkable photo URLs and source links.
-Follow this exact schema:
-
-{
-  "recipes": [
-    {
-      "id": "string-unique",
-      "name": "Recipe title",
-      "chef": "Chef name and short background",
-      "description": ["paragraph 1", "paragraph 2", "paragraph 3+"],
-      "ingredients": ["..."],
-      "steps": [
-        { "text": "Step text", "image": "https://...", "source": "https://source-page-for-this-photo" }
-      ],
-      "sourceUrl": "https://source-recipe-page",
-      "images": [
-        { "url": "https://...", "alt": "meaningful alt", "source": "https://source-recipe-page-or-photo-page" }
-      ]
-    }
-  ]
+Return an object {"recipes": Recipe[]} where Recipe = {
+  "title": string,
+  "description": string,
+  "image": string,            // absolute URL to a real image on the open web
+  "source": string,           // canonical page for the recipe
+  "ingredients": string[],
+  "steps": string[]
 }
-
 Rules:
-- Use real recipe sources from chefs, publishers, or reputable press; never invent URLs.
-- Prefer official or well-established sources (e.g., publisher CDNs, chef sites). Avoid "placeholder", "stock", "example", "unsplash", "lorem", "dummy" images.
-- If a step photo exists at the source, include it with its source URL; otherwise omit the step image (do NOT invent).
-- The 'source' for each image must be a clickable page that contains that photo or the recipe.
-- The JSON must be valid and parseable. No extra commentary.
+- No placeholder or stock images. Use only images that depict the final dish.
+- Prefer official/authoritative sources (chef sites, major food pubs).
+- Titles should be concise (<= 100 chars).
+- Steps should be actionable and numbered in the data array order.
+- Absolutely return valid JSON. Do not include markdown fences.
 `;
 
-function isHttpUrl(u?: string) {
-  if (!u) return false;
+/** Image verification with timeout and HEAD→GET fallback */
+async function verifyUrl(url: string, timeoutMs = 5000): Promise<boolean> {
   try {
-    const url = new URL(u);
-    return url.protocol === "http:" || url.protocol === "https:";
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+
+    // Some hosts block HEAD; try HEAD then tiny GET
+    let res = await fetch(url, { method: "HEAD", signal: ctl.signal });
+    if (!res.ok) {
+      res = await fetch(url, {
+        headers: { Range: "bytes=0-0" },
+        signal: ctl.signal,
+      });
+    }
+
+    clearTimeout(timer);
+    if (!res || !res.ok) return false;
+
+    const ct = res.headers.get("content-type") || "";
+    return (
+      ct.includes("image") ||
+      /\.(png|jpe?g|webp|gif|avif)(\?|#|$)/i.test(url)
+    );
   } catch {
     return false;
   }
 }
 
-function looksLikePlaceholder(u: string) {
-  const s = u.toLowerCase();
-  return (
-    s.includes("placeholder") ||
-    s.includes("dummy") ||
-    s.includes("lorem") ||
-    s.includes("example.com") ||
-    s.includes("unsplash") ||
-    s.includes("via.placeholder") ||
-    s.endsWith(".svg")
-  );
-}
-
-async function isGoodImage(url: string, referer: string): Promise<boolean> {
-  if (!isHttpUrl(url) || looksLikePlaceholder(url)) return false;
-
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 8000);
-
-  try {
-    const rsp = await fetch(url, {
-      method: "GET",
-      redirect: "follow",
-      signal: ctrl.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; FreshRecipesBot/1.0; +https://freshrecipes.io)",
-        Referer: referer,
-        Accept: "image/*,*/*;q=0.8",
-        Range: "bytes=0-0",
-      },
-    });
-
-    if (!rsp.ok) return false;
-    const ct = rsp.headers.get("content-type") || "";
-    if (!ct.startsWith("image/")) return false;
-
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-function proxy(url: string, origin: string) {
-  const u = new URL("/api/img", origin);
-  u.searchParams.set("u", url);
-  return u.toString();
-}
-
+/** Verify/Proxy all recipe images concurrently, non-fatal on failures */
 async function verifyAllImages(recipes: any[], origin: string) {
-  const referer = origin + "/";
-  for (const r of recipes || []) {
-    if (Array.isArray(r.images)) {
-      const out: any[] = [];
-      for (const im of r.images) {
-        if (im?.url && (await isGoodImage(im.url, referer))) {
-          out.push({ ...im, url: proxy(im.url, origin) });
+  const MAX_CONCURRENCY = 6;
+  const idxs = [...recipes.keys()];
+
+  const workers = Array.from(
+    { length: Math.min(MAX_CONCURRENCY, idxs.length) },
+    async () => {
+      while (idxs.length) {
+        const i = idxs.shift()!;
+        const r = recipes[i] || {};
+        const url = r.image;
+        if (typeof url === "string" && url.length > 0) {
+          const ok = await verifyUrl(url, 5000);
+          if (ok) {
+            r.image = `${origin}/api/img?u=${encodeURIComponent(url)}`;
+          } else {
+            // Don’t fail the whole response—just drop the image
+            delete r.image;
+          }
         }
       }
-      r.images = out;
     }
-    if (Array.isArray(r.steps)) {
-      r.steps = await Promise.all(
-        r.steps.map(async (st: any) => {
-          if (st?.image && (await isGoodImage(st.image, referer))) {
-            return { ...st, image: proxy(st.image, origin) };
-          }
-          const { image, ...rest } = st || {};
-          return rest;
-        })
-      );
-    }
-  }
-  return recipes;
+  );
+
+  await Promise.allSettled(workers);
+  // If your UI requires images, filter here; otherwise keep all with titles
+  return recipes.filter((r) => !!r.title);
 }
 
 export async function POST(req: NextRequest) {
@@ -131,30 +99,34 @@ export async function POST(req: NextRequest) {
     if (!process.env.OPENAI_API_KEY) {
       return new Response("OPENAI_API_KEY missing", { status: 500 });
     }
+    if (!MODEL) {
+      return new Response("OpenAI model not configured", { status: 500 });
+    }
 
     const { instruction } = await req.json();
-    if (!instruction || typeof instruction !== "string") {
+    const prompt = (instruction || "").toString().trim();
+    if (!prompt || typeof prompt !== "string") {
       return new Response("Missing 'instruction' string", { status: 400 });
     }
-    if (instruction.length > 2000) {
-      return new Response("Instruction too long (max 2000)", { status: 413 });
+    if (prompt.length > 2000) {
+      return new Response("Instruction too long (max 2000 chars)", {
+        status: 400,
+      });
     }
 
-    const model = process.env.OPENAI_MODEL || "gpt-4.1";
-
     const ai = await client.chat.completions.create({
-      model,
-      temperature: 0.2,
-      max_tokens: 4000,
+      model: MODEL,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: instruction },
       ],
+      temperature: 0.2,
+      max_tokens: 4000,
       response_format: { type: "json_object" as const },
     });
 
-    const txt = ai.choices?.[0]?.message?.content || "{}";
-    let data: any;
+    const txt = ai.choices?.[0]?.message?.content ?? "{}";
+    let data: any = {};
     try {
       data = JSON.parse(txt);
     } catch {
@@ -162,26 +134,26 @@ export async function POST(req: NextRequest) {
     }
 
     if (!Array.isArray(data.recipes)) data.recipes = [];
+    // Normalize to avoid downstream crashes
+    data.recipes = data.recipes
+      .map((r: any) => ({
+        title: String(r?.title ?? "").slice(0, 200),
+        image: r?.image ?? "",
+        source: r?.source ?? "",
+        description: r?.description ?? "",
+        ingredients: Array.isArray(r?.ingredients) ? r.ingredients : [],
+        steps: Array.isArray(r?.steps) ? r.steps : [],
+      }))
+      .filter((r: any) => r.title);
+
     const origin = req.nextUrl.origin;
     data.recipes = await verifyAllImages(data.recipes, origin);
 
     return new Response(JSON.stringify(data), {
-      headers: { "Content-Type": "application/json" },
+      headers: { "content-type": "application/json; charset=utf-8" },
     });
-  } catch (err: any) {
-    let status = err?.status || 500;
-    let msg = err?.message || "Server error";
-    try {
-      const body = await err?.response?.text?.();
-      if (body) msg += ` | OpenAI: ${body}`;
-    } catch {}
-    console.error("GENERATE_ERROR:", msg);
-    return new Response(msg, { status });
+  } catch (e: any) {
+    console.error("generate error", e);
+    return new Response("Internal error", { status: 500 });
   }
-}
-
-export async function GET() {
-  return new Response(JSON.stringify({ ok: true }), {
-    headers: { "Content-Type": "application/json" },
-  });
 }
