@@ -1,150 +1,130 @@
 // app/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 
-type GenResponse = {
-  ok: boolean;
-  previewHtml?: string;
-  blobUrl?: string;
-  pageUrl?: string;
-  filename?: string;
-  error?: string;
-};
+type Health = { ok: boolean; message?: string };
 
 export default function HomePage() {
   const [instruction, setInstruction] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string>("");
+  const [blobHealth, setBlobHealth] = useState<Health>({ ok: false });
 
-  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
-  const [pageUrl, setPageUrl] = useState<string | null>(null);
-  const [filename, setFilename] = useState<string | null>(null);
+  // ping blob health once on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/blob-health", { cache: "no-store" });
+        const j = await r.json().catch(() => ({}));
+        setBlobHealth({ ok: !!j.ok, message: j.message || (j.ok ? "OK" : "Fail") });
+      } catch {
+        setBlobHealth({ ok: false, message: "health route failed" });
+      }
+    })();
+  }, []);
 
-  async function handleGenerate() {
+  const disabledReason = !instruction.trim()
+    ? "Type an instruction"
+    : !blobHealth.ok
+    ? "Blob token not live"
+    : loading
+    ? "Working…"
+    : "";
+
+  const canGenerate = !!instruction.trim() && blobHealth.ok && !loading;
+
+  const handleGenerate = useCallback(async () => {
+    if (!canGenerate) return;
     setLoading(true);
-    setError(null);
-    setPreviewHtml(null);
-    setPageUrl(null);
-    setFilename(null);
-
+    setError("");
     try {
+      // this POST returns a full HTML file; open Preview in a new tab
       const rsp = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instruction }),
       });
-
       if (!rsp.ok) {
         const txt = await rsp.text();
-        throw new Error(txt || `Request failed with ${rsp.status}`);
+        throw new Error(txt || `HTTP ${rsp.status}`);
       }
-
-      const data = (await rsp.json()) as GenResponse;
-      if (!data.ok) throw new Error(data.error || "Generation failed.");
-
-      setPreviewHtml(data.previewHtml || null);
-      setPageUrl(data.pageUrl || data.blobUrl || null);
-      setFilename(data.filename || null);
+      const html = await rsp.text();
+      // open the HTML in a new tab so users can see it immediately
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
     } catch (e: any) {
-      setError(e?.message || "Failed to generate.");
+      setError(e?.message || "Failed to generate");
     } finally {
       setLoading(false);
     }
-  }
+  }, [instruction, canGenerate]);
 
   return (
-    <main className="min-h-screen bg-[#faf8f5] text-gray-900 p-6">
+    <main className="min-h-screen bg-[#0f0f10] text-[#f5f3ef] px-5 py-8">
       {/* Header */}
-      <header className="flex justify-between items-center mb-8">
-        <h1 className="text-4xl font-serif tracking-tight">Fresh Recipes</h1>
+      <header className="mx-auto max-w-3xl flex items-center justify-between mb-8">
+        <h1 className="text-4xl font-serif">Fresh Recipes</h1>
         <div className="flex items-center gap-3">
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-medium ${
+              blobHealth.ok ? "bg-green-600/25 text-green-300" : "bg-red-600/25 text-red-300"
+            }`}
+            title={blobHealth.message}
+          >
+            Blob: {blobHealth.ok ? "✅ OK" : "❌ Off"}
+          </span>
           <Link
-            href="/previous" // <-- matches your repo (app/previous/page.tsx)
-            className="px-4 py-2 rounded bg-[#c76d4e] text-white hover:bg-[#a85539] transition"
+            href="/archive"
+            className="rounded-md bg-[#c76d4e] hover:bg-[#a85539] px-3 py-2 text-sm"
           >
             Previous Recipes
           </Link>
-          {/* If you added the BlobBadge component earlier, drop it here:
-             <BlobBadge />
-          */}
         </div>
       </header>
 
-      {/* Input */}
-      <section className="mb-6 grid gap-3">
-        <label className="text-sm font-medium text-gray-700">Your instruction</label>
+      {/* Instruction */}
+      <section className="mx-auto max-w-3xl bg-[#171718] rounded-xl border border-white/10 p-4">
+        <label className="block text-lg font-semibold mb-2">Your instruction</label>
         <textarea
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder='e.g. "Fetch 5 pasta recipes from famous chefs"'
-          className="w-full min-h-[100px] border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#5c7c6d] bg-white"
+          rows={4}
+          placeholder={`e.g., Fetch 5 of the top pasta recipes from famous chefs.\nInclude full descriptions, ingredients, numbered steps, and **real** images linked to sources.\nOutput Food52-style, responsive.`}
+          className="w-full resize-y rounded-md bg-black/40 text-[#f5f3ef] placeholder-white/30 border border-white/10 p-3 focus:outline-none focus:ring-2 focus:ring-[#c76d4e]"
         />
-        <div className="flex items-center gap-3">
+        {/* Actions */}
+        <div className="mt-4 flex flex-wrap items-center gap-8">
           <button
+            type="button"
             onClick={handleGenerate}
-            disabled={loading || !instruction.trim()}
-            className="px-4 py-2 rounded bg-[#5c7c6d] text-white hover:bg-[#476253] disabled:opacity-50"
+            disabled={!canGenerate}
+            className={`rounded-md px-4 py-2 text-sm font-medium transition
+              ${canGenerate ? "bg-[#5c7c6d] hover:bg-[#476253] text-white" : "bg-white/10 text-white/40 cursor-not-allowed"}`}
           >
             {loading ? "Generating…" : "Generate"}
           </button>
 
-          {pageUrl && (
-            <>
-              <a
-                href={pageUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-4 py-2 rounded border border-gray-300 hover:bg-gray-50"
-                title="Open the saved page"
-              >
-                Open page
-              </a>
-              <a
-                href={pageUrl}
-                download={filename ?? "recipe.html"}
-                className="px-4 py-2 rounded border border-gray-300 hover:bg-gray-50"
-                title="Download the HTML"
-              >
-                Download .html
-              </a>
-            </>
-          )}
+          <div className="text-sm opacity-70">
+            {disabledReason ? `Why disabled: ${disabledReason}` : "Ready — press Generate"}
+          </div>
         </div>
-        <p className="text-xs text-gray-500">
-          Tip: Be explicit—ask for number of recipes, cuisines, and sourcing rules (images must link to originals).
-        </p>
       </section>
 
-      {/* Error */}
+      {/* Errors */}
       {error && (
-        <div className="mb-6 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+        <p className="mx-auto max-w-3xl mt-4 text-red-300">
           {error}
-        </div>
+        </p>
       )}
 
-      {/* Live Preview */}
-      {previewHtml ? (
-        <section className="rounded-xl border border-gray-200 shadow bg-white overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-            <h2 className="font-semibold">Live Preview</h2>
-            {filename && <span className="text-xs text-gray-500">{filename}</span>}
-          </div>
-          <div className="h-[70vh]">
-            <iframe
-              title="Recipe Preview"
-              className="w-full h-full"
-              srcDoc={previewHtml}
-              sandbox="allow-same-origin allow-popups allow-forms allow-scripts"
-            />
-          </div>
-        </section>
-      ) : (
-        <section className="rounded-lg border border-dashed border-gray-300 p-6 text-sm text-gray-500">
-          Your generated page will preview here.
-        </section>
-      )}
+      {/* Footer tip */}
+      <p className="mx-auto max-w-3xl mt-10 text-sm opacity-60">
+        Tip: Keep instructions specific. You can request layout rules, color palettes, sourcing
+        requirements, and per-step photos.
+      </p>
     </main>
   );
 }
