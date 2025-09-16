@@ -16,7 +16,7 @@ const MODEL =
   (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) ||
   "gpt-4o-mini";
 
-// Load your prompt exactly as written (env overrides file if set)
+// Load your system prompt exactly as written (env overrides file if set)
 const PROMPT_PATH = join(process.cwd(), "app", "prompt", "system-prompt.txt");
 function loadSystemPrompt(): string {
   const envOverride = process.env.RECIPE_SYSTEM_PROMPT?.trim();
@@ -28,55 +28,33 @@ function loadSystemPrompt(): string {
   }
 }
 
-/**
- * Proxy a single absolute image URL through /api/img with a best-effort Referer (&p=).
- * - Skips if already pointing at /api/img
- * - Guesses referer as the image origin (https://host/)
- */
-function makeProxy(url: string, origin: string): string {
-  try {
-    if (!/^https?:\/\//i.test(url)) return url; // only handle absolute http(s)
-    const u = new URL(url);
-    // Already proxied? leave as-is
-    if (u.pathname.startsWith("/api/img") || /\/api\/img/i.test(u.pathname)) return url;
-    const refererGuess = `${u.origin}/`;
-    return `${origin}/api/img?u=${encodeURIComponent(u.href)}&p=${encodeURIComponent(refererGuess)}`;
-  } catch {
-    return url;
-  }
+// Proxy any external image URL via /api/img
+function proxyImages(html: string, origin: string) {
+  return html.replace(
+    /(<img\b[^>]*\bsrc=)(['"]?)(https?:\/\/[^'">\s)]+)(\2)/gi,
+    (_m, pre, q, url, q2) =>
+      `${pre}${q}${origin}/api/img?u=${encodeURIComponent(url)}${q2}`
+  );
 }
 
-/**
- * Rewrites all <img src=...> and srcset=... entries to go through /api/img
- * - Handles single/double/no quotes around src
- * - Handles multiple candidates in srcset
- */
-function proxyImages(html: string, origin: string) {
-  // 1) src attributes
-  const withSrc = html.replace(
-    /(<img\b[^>]*\bsrc=)(['"]?)(https?:\/\/[^'">\s)]+)(\2)/gi,
-    (_m, pre, q, url, q2) => `${pre}${q}${makeProxy(url, origin)}${q2}`
+// If there are no <img>, inject a decent fallback (still proxied)
+function ensureAtLeastOneImage(html: string, origin: string, instruction: string) {
+  if (/<img\b/i.test(html)) return html;
+  const query = encodeURIComponent(
+    instruction.replace(/\s+/g, " ").trim() || "food"
   );
-
-  // 2) srcset attributes (comma-separated list of URLs with descriptors)
-  const withSrcset = withSrc.replace(
-    /(<img\b[^>]*\bsrcset=)(['"])([^'"]+)\2/gi,
-    (_m, pre, q, list) => {
-      const rewritten = list
-        .split(",")
-        .map(part => {
-          const seg = part.trim();
-          if (!seg) return seg;
-          const [u, desc] = seg.split(/\s+/, 2);
-          const proxied = makeProxy(u, origin);
-          return desc ? `${proxied} ${desc}` : proxied;
-        })
-        .join(", ");
-      return `${pre}${q}${rewritten}${q}`;
-    }
-  );
-
-  return withSrcset;
+  const src = `${origin}/api/img?u=${encodeURIComponent(
+    `https://source.unsplash.com/1200x800/?${query}`
+  )}`;
+  const injected = `<figure style="margin:24px 0;"><img src="${src}" alt="Dish image" style="width:100%;height:auto;border-radius:12px;display:block;object-fit:cover"/></figure>`;
+  // try to place after first H1 or at top of <body>
+  if (/<h1[^>]*>/i.test(html)) {
+    return html.replace(/(<h1[^>]*>.*?<\/h1>)/is, `$1\n${injected}`);
+  }
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/(<body[^>]*>)/i, `$1\n${injected}`);
+  }
+  return injected + html;
 }
 
 export async function POST(req: NextRequest) {
@@ -97,7 +75,7 @@ export async function POST(req: NextRequest) {
       return new Response("System prompt not found", { status: 500 });
     }
 
-    // IMPORTANT: We want rich, full HTML—NO JSON mode here.
+    // IMPORTANT: return rich HTML, not JSON
     const ai = await client.chat.completions.create({
       model: MODEL,
       messages: [
@@ -105,28 +83,26 @@ export async function POST(req: NextRequest) {
         { role: "user", content: instruction },
       ],
       temperature: 0.2,
-      // Room for multi-recipe, multi-paragraph, CSS-styled output
       max_tokens: 6000,
     });
 
-    let html = ai.choices?.[0]?.message?.content ?? "";
-    if (!html || !html.trim()) {
-      return new Response("Empty completion", { status: 502 });
-    }
+    let html = ai.choices?.[0]?.message?.content?.trim() ?? "";
+    if (!html) return new Response("Empty completion", { status: 502 });
 
-    html = html.trim();
-
-    // Safety: strip accidental code fences
+    // strip accidental fences
     if (html.startsWith("```")) {
       html = html.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
     }
 
-    // Proxy images so they’re reliable from third-party hosts (with &p= referer guess)
     const origin = req.nextUrl.origin;
     html = proxyImages(html, origin);
+    html = ensureAtLeastOneImage(html, origin, instruction);
 
     return new Response(html, {
-      headers: { "content-type": "text/html; charset=utf-8" },
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+      },
     });
   } catch (err) {
     console.error("generate error", err);
