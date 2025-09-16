@@ -1,132 +1,200 @@
 // app/api/generate/route.ts
 import OpenAI from "openai";
 import type { NextRequest } from "next/server";
-import { put } from "@vercel/blob";
 
-// ✅ Force Node runtime (OpenAI SDK needs Node, not Edge)
 export const runtime = "nodejs";
-// (Optional) allow longer time on Vercel
 export const maxDuration = 60;
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/**
- * YOUR STRICT SYSTEM PROMPT — sent to the model verbatim.
- * (No second inline system message that overrides this.)
- */
 const SYSTEM_PROMPT = `
-You generate one single, complete, downloadable HTML file from a natural-language instruction.
+You return structured JSON (not HTML) for recipes, with real, hotlinkable photo URLs and source links.
+Follow this exact schema:
 
-Prime Directives
-1) Do not compress, summarize, or reinterpret the user's instruction; use it verbatim as the task spec.
-2) Output exactly one artifact: a fully valid, self-contained HTML document (no Markdown fences, no JSON, no extra commentary).
-3) No placeholders: use only real images from the referenced recipe source or reputable coverage; each image hyperlinks to its source page.
-4) If step-by-step photos exist at the source, embed them next to the corresponding steps and link each to its source.
-5) Visual standard: Food52-like—clean grid, generous whitespace, muted palette (off-white bg, light-gray dividers, warm terracotta/sage accents), large serif headlines + clear sans body, elegant card shadows, responsive flex/grid.
-6) Mobile-first CSS; must render well on iPhone Safari and desktop browsers.
-7) Credits & sourcing: clearly credit chef/site; link recipe titles and images to sources. Avoid long verbatim copying from sources.
-8) File integrity: include <!DOCTYPE html>, <html>, proper <head> with meta viewport, embedded <style> (no external CSS/JS), and <body>.
-9) Accessibility: meaningful alt text on all images; adequate color contrast; semantic HTML.
+{
+  "recipes": [
+    {
+      "id": "string-unique",
+      "name": "Recipe title",
+      "chef": "Chef name and short background",
+      "description": ["paragraph 1", "paragraph 2", "paragraph 3+"],
+      "ingredients": ["..."],
+      "steps": [
+        { "text": "Step text", "image": "https://...", "source": "https://source-page-for-this-photo" }
+      ],
+      "sourceUrl": "https://source-recipe-page",
+      "images": [
+        { "url": "https://...", "alt": "meaningful alt", "source": "https://source-recipe-page-or-photo-page" }
+      ]
+    }
+  ]
+}
 
-Required Content For Each Recipe (driven by the user's instruction — number/type is variable)
-  1. Recipe name
-  2. Chef’s name and background
-  3. Full, detailed description (3–5+ paragraphs: history, context, chef’s philosophy, what makes it unique, cultural/seasonal notes)
-  4. Ingredients list
-  5. Step-by-step instructions
-  6. Real image URLs of the dish and steps (from the chef’s own recipe page, official publisher, or reputable culinary press)
-     • If step images exist on the source, embed them at the correct step.
-     • Every image must be wrapped with <a href="SOURCE_URL"> so clicking the image opens the source.
-     • Absolutely no placeholder or stock images. If no real images exist for a recipe, skip that recipe and choose another with real images.
-
-HTML OUTPUT REQUIREMENTS
-- Return exactly one HTML5 document ONLY.
-- Start with <!DOCTYPE html>. Include <html>, <head> (with <meta charset="utf-8"> and <meta name="viewport">), embedded <style>, and <body>.
-- Design: Food52-inspired—clean, minimalist, muted palette (off-white bg, light-gray dividers, warm terracotta/sage accents), big serif titles, clean sans body, recipe “cards” with hover, clear sections, responsive CSS grid/flex, subtle shadows, thin dividers, tasteful footer.
-- Accessibility: alt text for EVERY image, sufficient color contrast, semantic HTML (use <article>, <section>, <h1>…).
-
-Return only the single HTML document, polished enough to earn a 10/10 from UX designers and art directors.
+Rules:
+- Use real recipe sources from chefs, publishers, or reputable press; never invent URLs.
+- Prefer official or well-established sources (e.g., publisher CDNs, chef sites). Avoid "placeholder", "stock", "example", "unsplash", "lorem", "dummy" images.
+- If a step photo exists at the source, include it with its source URL; otherwise omit the step image (do NOT invent).
+- The 'source' for each image must be a clickable page that contains that photo or the recipe.
+- The JSON must be valid and parseable. No extra commentary.
 `;
+
+function isHttpUrl(u?: string) {
+  if (!u) return false;
+  try {
+    const url = new URL(u);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function looksLikePlaceholder(u: string) {
+  const s = u.toLowerCase();
+  return (
+    s.includes("placeholder") ||
+    s.includes("dummy") ||
+    s.includes("lorem") ||
+    s.includes("example.com") ||
+    s.includes("unsplash") || // you said no stock
+    s.includes("via.placeholder") ||
+    s.endsWith(".svg")
+  );
+}
+
+async function isGoodImage(url: string, referer: string): Promise<boolean> {
+  if (!isHttpUrl(url) || looksLikePlaceholder(url)) return false;
+
+  // HEAD can be blocked, so do a lightweight GET and only read headers
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+
+  try {
+    const rsp = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; FreshRecipesBot/1.0; +https://freshrecipes.io)",
+        Referer: referer,
+        Accept: "image/*,*/*;q=0.8",
+        Range: "bytes=0-0", // ask for first byte only; many servers still return headers + small payload
+      },
+    });
+
+    if (!rsp.ok) return false;
+    const ct = rsp.headers.get("content-type") || "";
+    if (!ct.startsWith("image/")) return false;
+
+    // If server ignored Range and sent full body, that's okay — we didn't read it.
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function proxy(url: string, origin: string) {
+  const u = new URL("/api/img", origin);
+  u.searchParams.set("u", url);
+  return u.toString();
+}
+
+async function verifyAllImages(recipes: any[], origin: string) {
+  const referer = origin + "/";
+  for (const r of recipes || []) {
+    // Top images
+    if (Array.isArray(r.images)) {
+      const out: any[] = [];
+      for (const im of r.images) {
+        if (im?.url && (await isGoodImage(im.url, referer))) {
+          out.push({ ...im, url: proxy(im.url, origin) });
+        }
+      }
+      r.images = out;
+    }
+
+    // Step images
+    if (Array.isArray(r.steps)) {
+      r.steps = await Promise.all(
+        r.steps.map(async (st: any) => {
+          if (st?.image && (await isGoodImage(st.image, referer))) {
+            return { ...st, image: proxy(st.image, origin) };
+          }
+          const { image, ...rest } = st || {};
+          return rest; // drop bad image, keep text/source
+        })
+      );
+    }
+  }
+  return recipes;
+}
 
 export async function POST(req: NextRequest) {
   try {
-    const { instruction } = await req.json();
-
-    if (!instruction || typeof instruction !== "string") {
-      return new Response("Missing 'instruction' string in JSON body.", { status: 400 });
-    }
     if (!process.env.OPENAI_API_KEY) {
-      return new Response("OPENAI_API_KEY is missing in the deployment env.", { status: 500 });
-    }
-    if (instruction.length > 4000) {
-      return new Response("Instruction too long (max ~4000 chars).", { status: 413 });
+      return new Response("OPENAI_API_KEY missing", { status: 500 });
     }
 
-    // Let you override in Vercel env if you want (e.g., gpt-5)
-    const model = process.env.OPENAI_MODEL || "gpt-4.1";
+    const { instruction } = await req.json();
+    if (!instruction || typeof instruction !== "string") {
+      return new Response("Missing 'instruction' string", { status: 400 });
+    }
+    if (instruction.length > 2000) {
+      return new Response("Instruction too long (max 2000)", { status: 413 });
+    }
 
-    // 🔴 IMPORTANT: we actually use SYSTEM_PROMPT here. No second system message.
-    const rsp = await client.chat.completions.create({
+    const model = process.env.OPENAI_MODEL || "gpt-4.1"; // set to your preferred model
+
+    const ai = await client.chat.completions.create({
       model,
-      temperature: 0.5,
-      max_tokens: 7000,
+      temperature: 0.2,
+      max_tokens: 4000,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: instruction },
+        {
+          role: "user",
+          content:
+            "User request (variable; do NOT hardcode '5 pasta'): " +
+            instruction,
+        },
       ],
+      response_format: { type: "json_object" as const },
     });
 
-    const html = rsp.choices?.[0]?.message?.content ?? "";
-
-    // Hard-check: only accept full HTML docs
-    const trimmed = html.trim();
-    if (!/^<!DOCTYPE html>/i.test(trimmed) || !/<html[\s>]/i.test(trimmed)) {
-      // Surface first chunk to help diagnose if the model deviated
-      console.error("MODEL RAW OUTPUT (head):", trimmed.slice(0, 400));
-      return new Response("Model did not return a complete HTML document.", { status: 502 });
+    const txt = ai.choices?.[0]?.message?.content || "{}";
+    let data: any;
+    try {
+      data = JSON.parse(txt);
+    } catch {
+      return new Response("Model did not return valid JSON", { status: 502 });
     }
 
-    // Save to Blob as a public HTML page so you can link to it
-    const slug = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `recipes/${slug}.html`;
+    // Ensure structure exists
+    if (!Array.isArray(data.recipes)) data.recipes = [];
 
-    const { url: blobUrl } = await put(filename, html, {
-      access: "public",
-      contentType: "text/html; charset=utf-8",
-      addRandomSuffix: false,
-      // token: process.env.BLOB_READ_WRITE_TOKEN, // optional; SDK reads env automatically
-    });
+    // Verify all images and proxy them
+    const origin = req.nextUrl.origin;
+    data.recipes = await verifyAllImages(data.recipes, origin);
 
-    // JSON for your UI: preview + public page URL
-    return new Response(
-      JSON.stringify({
-        ok: true,
-        previewHtml: html, // iframe live preview
-        blobUrl,           // direct public URL
-        pageUrl: blobUrl,  // alias used by your client
-        filename,          // shown in UI
-      }),
-      { headers: { "Content-Type": "application/json" } }
-    );
-  } catch (err: any) {
-    // Bubble up real OpenAI error text if present
-    let status = err?.status || 500;
-    let details = err?.message || "Server error";
-    try {
-      const body = await err?.response?.text?.();
-      if (body) details += ` | OpenAI: ${body}`;
-    } catch {}
-    console.error("GENERATE_ROUTE_ERROR:", details);
-    return new Response(JSON.stringify({ ok: false, error: details }), {
-      status,
+    return new Response(JSON.stringify(data), {
       headers: { "Content-Type": "application/json" },
     });
+  } catch (err: any) {
+    let status = err?.status || 500;
+    let msg = err?.message || "Server error";
+    try {
+      const body = await err?.response?.text?.();
+      if (body) msg += ` | OpenAI: ${body}`;
+    } catch {}
+    console.error("GENERATE_ERROR:", msg);
+    return new Response(msg, { status });
   }
 }
 
 export async function GET() {
-  // lets you hit /api/generate in a browser to see if the route is alive
-  return new Response(JSON.stringify({ ok: true, route: "/api/generate" }), {
+  return new Response(JSON.stringify({ ok: true }), {
     headers: { "Content-Type": "application/json" },
   });
 }
