@@ -55,10 +55,8 @@ export async function POST(req: NextRequest) {
 
     // Minimal post-processing:
     const pure = toPureHtml(raw);
-    // If no <img>, insert a neutral hero so there is *always* an image
     const withImage = ensureAtLeastOneImage(pure);
-    // Enforce no-referrer on all images + meta tag, and normalize URLs
-    const html = addNoReferrer(withImage);
+    const html = addNoReferrer(withImage); // normalize & harden images + meta
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
   } catch (err) {
@@ -101,7 +99,6 @@ function ensureAtLeastOneImage(html: string): string {
     `<img src="https://picsum.photos/1200/630" alt="" ` +
     `style="width:100%;height:auto;border-radius:12px;display:block;margin:16px 0" />`;
 
-  // Try after <h1>, then start of <body>, else prepend
   if (/(<h1[^>]*>[\s\S]*?<\/h1>)/i.test(html)) {
     return html.replace(/(<h1[^>]*>[\s\S]*?<\/h1>)/i, `$1\n${hero}`);
   }
@@ -111,17 +108,14 @@ function ensureAtLeastOneImage(html: string): string {
   return `${hero}\n${html}`;
 }
 
-function absolutizeUrl(u: string): string {
-  // //example.com/img → https://example.com/img
-  if (/^\/\//.test(u)) return "https:" + u;
-  // /images/x.jpg → leave as-is (relative to the doc). In iframes this may 404; we’ll fix below.
-  return u;
+function absolutizeProtocolRelative(u: string): string {
+  return u.startsWith("//") ? "https:" + u : u;
 }
 
 function addNoReferrer(html: string): string {
   let out = html || "";
 
-  // Ensure <head> contains meta referrer (sample demonstrates this)
+  // Ensure <head> contains meta referrer (matches your working sample)
   const meta = `<meta name="referrer" content="no-referrer">`;
   if (/<head[^>]*>/i.test(out)) {
     if (!/name=["']referrer["']/i.test(out)) {
@@ -133,58 +127,54 @@ function addNoReferrer(html: string): string {
     out = `<head>\n${meta}\n</head>\n` + out;
   }
 
-  // Normalize common lazy-load patterns -> force a real absolute https src
+  // Normalize images: prefer data-src*/srcset → src; fix //host → https://host; reject relative /foo.jpg
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
     let t = tag;
 
-    // promote data-src / data-original / data-lazy to src
-    const dataSrcMatch = t.match(/\bdata-(?:src|original|lazy)\s*=\s*("([^"]+)"|'([^']+)'|([^\s>]+))/i);
-    const srcMatch = t.match(/\bsrc\s*=\s*("([^"]+)"|'([^']+)'|([^\s>]+))/i);
-    let srcVal = (srcMatch?.[2] || srcMatch?.[3] || srcMatch?.[4] || "").trim();
+    // prefer data-src / data-original / data-lazy if present
+    const dataSrc = matchAttr(t, /data-(?:src|original|lazy)/i);
+    const srcAttr = matchAttr(t, /src/i);
+    let src = dataSrc || srcAttr || "";
 
-    if (!srcVal && dataSrcMatch) {
-      srcVal = (dataSrcMatch[2] || dataSrcMatch[3] || dataSrcMatch[4] || "").trim();
-      // insert a src attribute if missing
-      if (srcVal) {
-        // remove any existing src=
-        t = t.replace(/\bsrc\s*=\s*(".*?"|'.*?'|[^\s>]+)/i, "");
-        // add src= early in the tag
-        t = t.replace(/^<img\b/i, `<img src="${srcVal}"`);
-      }
+    // if there's a srcset, pick the first HTTPS candidate
+    const srcset = matchAttr(t, /srcset/i);
+    if (!src && srcset) {
+      const first = (srcset.split(",")[0] || "").trim().split(/\s+/)[0] || "";
+      src = first;
     }
 
-    // absolutize protocol-relative
-    if (srcVal?.startsWith("//")) {
-      srcVal = absolutizeUrl(srcVal);
-      t = t.replace(/\bsrc\s*=\s*(".*?"|'.*?'|[^\s>]+)/i, `src="${srcVal}"`);
-    }
+    // absolutize //host/img → https://host/img
+    src = absolutizeProtocolRelative(src);
 
-    // convert root-relative /foo.jpg → (unresolvable in srcDoc) → leave it, but if no http(s) present anywhere, fallback
-    const hasHttpSrc = /src=["']https?:\/\//i.test(t);
-
-    // strip any existing referrer/cors attrs
-    t = t.replace(/\s(referrerpolicy|crossorigin)\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-
-    // if still no absolute http(s) src, fallback to a neutral image (prevents broken icon)
-    if (!hasHttpSrc) {
+    // if src is missing or looks relative (/foo.jpg or ./bar.png), replace with a neutral absolute
+    if (!/^https?:\/\//i.test(src)) {
       t = `<img src="https://picsum.photos/800/450" alt=""`;
+    } else {
+      // ensure the tag has this src (normalize onto a single src=)
+      t = t
+        .replace(/\bsrc\s*=\s*(".*?"|'.*?'|[^\s>]+)/i, "") // remove any old src
+        .replace(/^<img\b/i, `<img src="${src}"`); // set normalized src
     }
 
-    // append safe attrs right before the closing > or />
+    // strip any existing referrer/cors attrs, then append safe ones
+    t = t.replace(/\s(referrerpolicy|crossorigin)\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
     return t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
   });
 
-  // External links should mirror the sample’s safe behavior
+  // External links → safe target/rel (mirrors your sample’s intent)
   out = out.replace(/<a\b([^>]*?)>/gi, (tag, attrs) => {
     let t = `<a${attrs}>`;
-    const hasTarget = /\btarget=/.test(attrs);
-    const hasRel = /\brel=/.test(attrs);
-    if (!hasTarget) t = t.replace(/<a\b/, '<a target="_blank"');
-    if (!hasRel) t = t.replace(/<a\b/, '<a rel="noreferrer noopener"');
+    if (!/\btarget=/.test(attrs)) t = t.replace(/<a\b/, '<a target="_blank"');
+    if (!/\brel=/.test(attrs)) t = t.replace(/<a\b/, '<a rel="noreferrer noopener"');
     return t;
   });
 
   return out;
+}
+
+function matchAttr(tag: string, nameRe: RegExp): string | "" {
+  const m = tag.match(new RegExp(`${nameRe.source}\\s*=\\s*("([^"]+)"|'([^']+)'|([^\\s>]+))`, nameRe.flags));
+  return (m?.[2] || m?.[3] || m?.[4] || "").trim();
 }
 
 function slugify(s: string) {
