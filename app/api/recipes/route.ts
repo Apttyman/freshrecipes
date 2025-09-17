@@ -1,90 +1,86 @@
-// app/api/recipes/route.ts
-import { list } from "@vercel/blob";
+import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type Row = {
   slug: string;
   title: string;
+  description?: string | null;
   query: string | null;
   createdAt: number;
   urlHtml: string | null;
   urlJson: string | null;
 };
 
-const toTs = (v: unknown): number => {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  const n = Date.parse(String(v ?? ""));
-  return Number.isFinite(n) ? n : 0;
-};
+const BLOB_PUBLIC_BASE = process.env.BLOB_PUBLIC_BASE?.replace(/\/+$/, "") || "";
 
-const stemFromPath = (p: string) => {
-  const m = p.match(/^recipes\/(.+?)\.(html|json)$/i);
-  return m ? m[1] : null;
-};
+function toEpoch(v: unknown): number {
+  if (v == null) return 0;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : 0;
+  }
+  if (v instanceof Date) return v.getTime();
+  const t = new Date(v as any).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function blobUrl(b: { pathname: string } & Record<string, any>): string {
+  if (b && typeof b.url === "string" && b.url.length > 0) return b.url as string;
+  if (BLOB_PUBLIC_BASE) return `${BLOB_PUBLIC_BASE}/${b.pathname}`;
+  return `/${b.pathname}`;
+}
 
 export async function GET() {
+  const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN_RW;
+  if (!token) return NextResponse.json({ recipes: [] as Row[] }, { status: 200 });
+
   try {
-    const { blobs } = await list({
-      prefix: "recipes/",
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-    });
+    const { list } = await import("@vercel/blob");
+    const res = await list({ token, prefix: "recipes/" });
 
-    // index by stem
-    const htmlByStem = new Map<string, (typeof blobs)[number]>();
-    const jsonByStem = new Map<string, (typeof blobs)[number]>();
+    const pages = res.blobs.filter((b: any) => String(b.pathname).endsWith(".html"));
+    const meta  = res.blobs.filter((b: any) => String(b.pathname).endsWith(".json"));
 
-    for (const b of blobs) {
-      const stem = stemFromPath(b.pathname);
-      if (!stem) continue;
-      if (b.pathname.endsWith(".html")) htmlByStem.set(stem, b);
-      else if (b.pathname.endsWith(".json")) jsonByStem.set(stem, b);
-    }
+    pages.sort((a: any, b: any) => toEpoch(b.uploadedAt) - toEpoch(a.uploadedAt));
 
-    // build rows (light touch; don't let one failure block all)
     const rows: Row[] = await Promise.all(
-      Array.from(new Set([...htmlByStem.keys(), ...jsonByStem.keys()])).map(
-        async (stem) => {
-          const html = htmlByStem.get(stem) || null;
-          const json = jsonByStem.get(stem) || null;
+      pages.map(async (p: any) => {
+        const base = String(p.pathname).replace(/^recipes\//, "").replace(/\.html$/, "");
+        const sidecarPath = `recipes/${base}.json`;
+        const sidecar = meta.find((m: any) => String(m.pathname) === sidecarPath);
 
-          let title = stem;
-          let query: string | null = null;
-          let createdAt = toTs((html as any)?.uploadedAt || (json as any)?.uploadedAt);
+        let description: string | null = null;
+        let query: string | null = null;
 
-          if (json?.url) {
-            try {
-              const r = await fetch(json.url, { cache: "no-store" });
-              if (r.ok) {
-                const j = await r.json();
-                if (typeof j?.title === "string" && j.title.trim()) title = j.title.trim();
-                if (typeof j?.query === "string") query = j.query;
-                if (j?.createdAt) createdAt = toTs(j.createdAt);
-              }
-            } catch {
-              // ignore sidecar fetch failures
+        if (sidecar) {
+          try {
+            const url = blobUrl(sidecar);
+            const r = await fetch(url, { cache: "no-store" });
+            if (r.ok) {
+              const j = (await r.json().catch(() => null)) as { description?: string; query?: string } | null;
+              description = j?.description ?? null;
+              query = j?.query ?? null;
             }
-          }
-
-          return {
-            slug: stem,
-            title,
-            query,
-            createdAt,
-            urlHtml: html?.url ?? null,
-            urlJson: json?.url ?? null,
-          };
+          } catch { /* ignore */ }
         }
-      )
+
+        return {
+          slug: base,
+          title: decodeURIComponent(base).replace(/[-_]/g, " "),
+          description,
+          query,
+          createdAt: toEpoch(p.uploadedAt) || Date.now(),
+          urlHtml: blobUrl(p),
+          urlJson: sidecar ? blobUrl(sidecar) : null
+        };
+      })
     );
 
-    // newest-first
-    rows.sort((a, b) => b.createdAt - a.createdAt);
-
-    return new Response(JSON.stringify({ recipes: rows }), {
-      headers: { "content-type": "application/json; charset=utf-8" },
-    });
-  } catch {
-    return new Response("Failed to list recipes", { status: 500 });
+    return NextResponse.json({ recipes: rows }, { status: 200 });
+  } catch (err) {
+    return NextResponse.json({ recipes: [] as Row[], _error: String(err) }, { status: 200 });
   }
 }
