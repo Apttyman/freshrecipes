@@ -3,67 +3,69 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import { toPureHtml, addNoReferrer, rewriteImagesToCloudinary } from "@/app/lib/html-tools";
-// ⬇️ use relative path (no alias)
 import {
   toPureHtml,
   ensureAtLeastOneImage,
   addNoReferrer,
   rewriteImagesToCloudinary,
 } from "../../lib/html-tools";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const MODEL = "gpt-4o-mini"; // your existing model
+const MODEL = "gpt-4o-mini";
+
+function slugify(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
+}
 
 export async function POST(req: NextRequest) {
   try {
-    // Prompt from body or query
-    let promptFromBody: string | undefined;
+    // 1) read system prompt from file
+    const sysPath = join(process.cwd(), "app", "prompt", "system-prompt.txt");
+    const systemPrompt = await readFile(sysPath, "utf8");
+
+    // 2) get user prompt
+    let bodyPrompt: string | undefined;
     try {
-      const body = (await req.json()) as any;
-      promptFromBody = body?.prompt ?? body?.query ?? body?.text;
-    } catch { /* body may be empty */ }
-    const promptFromQuery = req.nextUrl.searchParams.get("q") ?? undefined;
-    const userPrompt = (promptFromBody ?? promptFromQuery ?? "").trim();
+      const b = (await req.json()) as any;
+      bodyPrompt = b?.prompt ?? b?.query ?? b?.text;
+    } catch {}
+    const qPrompt = req.nextUrl.searchParams.get("q") ?? undefined;
+    const userPrompt = (bodyPrompt ?? qPrompt ?? "").trim();
 
     if (!userPrompt) {
       return NextResponse.json({ error: "Missing prompt", html: "", slug: "" }, { status: 400 });
     }
-
     if (!process.env.OPENAI_API_KEY) {
-      const msg = "<!doctype html><html><body><p>OPENAI_API_KEY not set.</p></body></html>";
+      const msg =
+        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
       return NextResponse.json({ html: msg, slug: slugify(userPrompt) }, { status: 200 });
     }
 
-    // ✅ Load your system prompt file (kept exactly in your repo)
-    const sysPath = join(process.cwd(), "app", "prompt", "system-prompt.txt");
-    const systemPrompt = await readFile(sysPath, "utf8");
-
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const messages = [
-      { role: "system" as const, content: systemPrompt },
-      { role: "user" as const, content: userPrompt },
-    ];
-
+    // 3) call OpenAI with your system-prompt.txt + user prompt
     const { choices } = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.7,
-      messages,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
     });
 
+    // 4) sanitize + image handling
     const raw = (choices[0]?.message?.content ?? "").trim();
+    let html = toPureHtml(raw);
+    html = ensureAtLeastOneImage(html);
 
-    // Minimal post-processing
-    const pure = toPureHtml(raw);
+    // If Cloudinary cloud name is present, rewrite image URLs to Cloudinary fetch
+    const cloud = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || process.env.CLOUDINARY_CLOUD_NAME;
+    html = rewriteImagesToCloudinary(html, cloud);
 
-    // 🔁 Rehost all images via Cloudinary "fetch" (if cloud name provided)
-    const cloud = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
-    const rehosted = rewriteImagesToCloudinary(pure, cloud);
-
-    // Add meta + per-image no-referrer
-    const html = addNoReferrer(rehosted);
+    // Always add no-referrer for safety
+    html = addNoReferrer(html);
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
   } catch (err) {
@@ -72,8 +74,4 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
-}
-
-function slugify(s: string) {
-  return s.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 }
