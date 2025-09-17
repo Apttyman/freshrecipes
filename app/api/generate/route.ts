@@ -9,42 +9,35 @@ export const runtime = "nodejs";
 
 const MODEL = "gpt-4o-mini";
 
-// --- tiny util to load your system prompt file ---
 async function loadSystemPrompt(): Promise<string> {
-  // absolute path so it works on Vercel too
   const p = path.join(process.cwd(), "app", "prompt", "system-prompt.txt");
   try {
     return await readFile(p, "utf8");
   } catch {
-    // fallback: small system hint if file missing
     return "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>.";
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // Accept prompt from body or query (backwards compatible)
-    let bodyPrompt: string | undefined;
-    try {
-      const body = (await req.json()) as any;
-      bodyPrompt = body?.prompt ?? body?.query ?? body?.text;
-    } catch {
-      /* body may be empty */
-    }
-    const queryPrompt = req.nextUrl.searchParams.get("q") ?? undefined;
-    const userPrompt = (bodyPrompt ?? queryPrompt ?? "").trim();
+    // prompt from body or ?q=
+    let b: any = undefined;
+    try { b = await req.json(); } catch { /* ignore */ }
+    const userPrompt =
+      String(b?.prompt ?? b?.query ?? b?.text ?? req.nextUrl.searchParams.get("q") ?? "")
+        .trim();
 
     if (!userPrompt) {
       return NextResponse.json(
-        { error: "Missing prompt", html: "", slug: "" },
+        { error: "Missing prompt", html: "", slug: "", rawSnippet: "" },
         { status: 400 }
       );
     }
 
     if (!process.env.OPENAI_API_KEY) {
       const msg =
-        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
-      return NextResponse.json({ html: msg, slug: slugify(userPrompt) }, { status: 200 });
+        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set.</p></body></html>";
+      return NextResponse.json({ html: msg, slug: slugify(userPrompt), rawSnippet: msg.slice(0, 280) }, { status: 200 });
     }
 
     const systemPrompt = await loadSystemPrompt();
@@ -59,23 +52,31 @@ export async function POST(req: NextRequest) {
       ],
     });
 
-    const raw = (choices[0]?.message?.content ?? "").trim();
+    const raw = (choices?.[0]?.message?.content ?? "").trim();
     const pure = toPureHtml(raw);
     const hardened = addNoReferrer(pure);
 
+    // If we somehow got nothing, surface a readable error & a snippet
+    if (!hardened || !hardened.trim()) {
+      return NextResponse.json(
+        {
+          error: "Model returned empty HTML",
+          html: "",
+          slug: slugify(userPrompt),
+          rawSnippet: raw.slice(0, 500),
+        },
+        { status: 502 }
+      );
+    }
+
     return NextResponse.json(
-      { html: hardened, slug: slugify(userPrompt) },
+      { html: hardened, slug: slugify(userPrompt), rawSnippet: raw.slice(0, 200) },
       { status: 200 }
     );
   } catch (err: any) {
-    // === DEBUG: you’ll see this in Vercel function logs ===
     console.error("Generate API error:", err);
     return NextResponse.json(
-      {
-        error: String(err?.message || err || "Generation failed"),
-        html: "",
-        slug: "",
-      },
+      { error: String(err?.message || err || "Generation failed"), html: "", slug: "", rawSnippet: "" },
       { status: 500 }
     );
   }
@@ -91,9 +92,7 @@ function toPureHtml(s: string): string {
     try {
       const j = JSON.parse(out);
       if (j && typeof j.html === "string") out = j.html;
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }
 
   // Strip fenced code blocks: ```html ... ``` or ``` ... ```
@@ -108,7 +107,6 @@ function toPureHtml(s: string): string {
 function addNoReferrer(html: string): string {
   let out = html || "";
 
-  // Ensure a meta referrer in <head>
   const meta = `<meta name="referrer" content="no-referrer">`;
   if (/<head[^>]*>/i.test(out)) {
     if (!/name=["']referrer["']/i.test(out)) {
@@ -120,7 +118,6 @@ function addNoReferrer(html: string): string {
     out = `<head>\n${meta}\n</head>\n` + out;
   }
 
-  // Add referrerpolicy/crossorigin to every <img>
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
     let t = tag
       .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
