@@ -126,13 +126,20 @@ function addNoReferrer(html: string): string {
     out = `<head>\n${meta}\n</head>\n` + out;
   }
 
-  // Add attributes to every <img> (preserve "/>" if present)
+   // Add attributes to every <img> and ensure absolute HTTPS (fallback if needed)
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
-    let t = tag
-      .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
-      .replace(/\scrossorigin\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-    t = t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
-    return t.replace(/\s{2,}/g, " ");
+    let t = tag;
+
+    // strip any existing referrer/cors attrs
+    t = t.replace(/\s(referrerpolicy|crossorigin)\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
+
+    // if no absolute http(s) src, fallback to a neutral image
+    if (!/src=["']https?:\/\//i.test(t)) {
+      t = `<img src="https://picsum.photos/800/450" alt=""`;
+    }
+
+    // append safe attrs right before the closing > or />
+    return t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
   });
 
   return out;
