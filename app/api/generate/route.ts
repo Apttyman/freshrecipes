@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
       const body = (await req.json()) as any;
       promptFromBody = body?.prompt ?? body?.query ?? body?.text;
     } catch {
-      // no-op; body might be empty or not JSON
+      /* body may be empty or not JSON */
     }
     const promptFromQuery = req.nextUrl.searchParams.get("q") ?? undefined;
 
@@ -35,12 +35,12 @@ export async function POST(req: NextRequest) {
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Keep the instructions light; we sanitize output afterwards
+    // Keep instructions light; we sanitize output afterwards
     const messages = [
       {
         role: "system" as const,
         content:
-          "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>. Do not include Markdown fences or JSON.",
+          "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>. Include at least one <img> with an absolute HTTPS src. Do not include Markdown fences or JSON.",
       },
       { role: "user" as const, content: userPrompt },
     ];
@@ -55,7 +55,10 @@ export async function POST(req: NextRequest) {
 
     // Minimal post-processing:
     const pure = toPureHtml(raw);
-    const html = addNoReferrer(pure);
+    // If no <img>, insert a neutral hero so there is *always* an image
+    const withImage = ensureAtLeastOneImage(pure);
+    // Enforce no-referrer on all images + meta tag
+    const html = addNoReferrer(withImage);
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
   } catch (err) {
@@ -88,6 +91,24 @@ function toPureHtml(s: string): string {
   if (mAny) return mAny[1].trim();
 
   return out;
+}
+
+/** If there are *no* <img> tags, inject a neutral hero at the top of <body> (or document). */
+function ensureAtLeastOneImage(html: string): string {
+  if (/<img\b/i.test(html)) return html;
+
+  const hero =
+    `<img src="https://picsum.photos/1200/630" alt="" ` +
+    `style="width:100%;height:auto;border-radius:12px;display:block;margin:16px 0" />`;
+
+  // Try after <h1>, then start of <body>, else prepend
+  if (/(<h1[^>]*>[\s\S]*?<\/h1>)/i.test(html)) {
+    return html.replace(/(<h1[^>]*>[\s\S]*?<\/h1>)/i, `$1\n${hero}`);
+  }
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/(<body[^>]*>)/i, `$1\n${hero}`);
+  }
+  return `${hero}\n${html}`;
 }
 
 function addNoReferrer(html: string): string {
