@@ -1,30 +1,30 @@
 Prompt:
 
 Fetch {input directives}. For each recipe, provide:
-  1.  Recipe name
-  2.  Chef’s name and background
-  3.  Full, detailed description (at least 3–5 paragraphs, rich with history, culinary context, the chef’s philosophy, what makes the dish unique, and any cultural or seasonal notes)
-  4.  Ingredients list
-  5.  Step-by-step instructions
-  6.  An actual image URL of the dish, sourced from the chef’s own recipe, official publication, or widely recognized culinary press (not placeholders, not stock photos). An image of each step in the process, where the source file has such images.
+  1. Recipe name
+  2. Chef’s name and background (if known)
+  3. Full, detailed description (minimum 3–5 paragraphs), rich with:
+       - History and culinary context
+       - Chef’s philosophy
+       - What makes the dish unique
+       - Cultural or seasonal notes
+  4. Ingredients list
+  5. Step-by-step instructions with enough detail for each step to be complete and usable
+  6. Where available from the source: an actual photo of the finished dish AND a photo for each step in the instructions (1:1 match with steps). Use only real images from official recipe sources, press, or culinary publications. If step images do not exist, omit rather than substitute placeholders.
 
-Then output the results in a colorful, polished HTML design that mimics the style of the Food52 website. The HTML should include:
-  • A clean, modern, minimalist layout with plenty of white space
-  • A soft, muted color palette (off-white background, light gray dividers, warm accent colors like terracotta or sage green)
+Then output the results in a colorful, polished HTML design inspired by Food52:
+  • Clean, modern, minimalist layout with generous white space
+  • Soft muted palette (off-white background, light gray dividers, warm accents like terracotta or sage green)
   • Large, bold serif typography for titles, clean sans-serif for body text
-  • Recipe “cards” with hover effects and clear sectioning for ingredients vs instructions
-  • Actual chef-dish images embedded in each recipe card (sourced from the recipe in question)
-  • Responsive design for both desktop and mobile (using simple CSS flex/grid)
-  • Subtle drop shadows on cards for depth, thin divider lines for elegance
-  • A footer styled with a muted background color and understated text links
-
-The goal is to create HTML/CSS output that would earn a 10/10 rating from UX designers and art directors, specifically because it reflects the visual identity and design philosophy of Food52.
-
-Don’t output the code, give me the html file.
+  • Recipe “cards” with hover effects and clear sectioning (ingredients vs instructions)
+  • Real chef/dish/step images embedded directly
+  • Responsive design (desktop & mobile via flex/grid)
+  • Subtle card drop shadows and elegant divider lines
+  • Footer with muted background and understated links
 
 STRICT RULES:
-- Return a COMPLETE, valid HTML document (<!DOCTYPE html> ... </html>) with embedded <style> and no external dependencies.
-- DO NOT include markdown code fences or explanatory prose — only the final HTML file.
-- Use semantic, accessible HTML (landmarks, headings hierarchy, alt text).
-- Use real image URLs (absolute). Avoid placeholders; if a step image is unavailable, omit it without comment.
-- Keep CSS scoped to the page. No frameworks.
+- Always return a COMPLETE valid HTML5 document (`<!DOCTYPE html> … </html>`) with inline `<style>`.
+- NO markdown fences or explanatory prose.
+- Semantic, accessible HTML (landmarks, headings, alt text).
+- All images must be absolute HTTPS URLs; no placeholders.
+- CSS must be embedded and scoped to the page. No frameworks, no external CSS.
