@@ -1,62 +1,85 @@
+// app/api/save/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { put } from "@vercel/blob";
 
-export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type SaveBody = {
   html?: string;
-  meta?: Record<string, any>;
   slug?: string;
+  // Optional: if you also send JSON sidecar, we’ll store it when present
+  json?: unknown;
 };
 
 export async function POST(req: NextRequest) {
-  const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN_RW;
-  if (!token) {
-    return NextResponse.json(
-      { ok: false, error: "Blob token missing. Set BLOB_READ_WRITE_TOKEN in Vercel." },
-      { status: 503 }
-    );
-  }
-
+  let slug = "";
   try {
     const body = (await req.json().catch(() => ({}))) as SaveBody;
+    const html = (body.html ?? "").toString();
+    slug = (body.slug ?? "").toString().trim();
 
-    const html = body.html ?? "<!-- empty -->";
-    const slug =
-      (body.slug && sanitizeSlug(body.slug)) ||
-      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (!html || !slug) {
+      return NextResponse.json(
+        { error: "Missing html or slug" },
+        { status: 400 }
+      );
+    }
 
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (!token) {
+      return NextResponse.json(
+        {
+          error:
+            "BLOB_READ_WRITE_TOKEN is not set (Vercel → Project → Settings → Environment Variables).",
+        },
+        { status: 500 }
+      );
+    }
+
+    // Store HTML (public, no random suffix so archive is stable)
     const htmlKey = `recipes/${slug}.html`;
-    const jsonKey = `recipes/${slug}.json`;
-
-    const { put } = await import("@vercel/blob");
-
-    await put(htmlKey, html, {
+    const htmlBlob = await put(htmlKey, html, {
       token,
       access: "public",
       contentType: "text/html; charset=utf-8",
-      addRandomSuffix: false
+      addRandomSuffix: false,
     });
 
-    const metaPayload = {
-      ...(body.meta ?? {}),
-      slug,
-      savedAt: new Date().toISOString()
-    };
+    // Optionally store JSON sidecar if provided
+    let jsonKey: string | undefined;
+    if (typeof body.json !== "undefined") {
+      jsonKey = `recipes/${slug}.json`;
+      await put(jsonKey, JSON.stringify(body.json, null, 2), {
+        token,
+        access: "public",
+        contentType: "application/json; charset=utf-8",
+        addRandomSuffix: false,
+      });
+    }
 
-    await put(jsonKey, JSON.stringify(metaPayload, null, 2), {
-      token,
-      access: "public",
-      contentType: "application/json; charset=utf-8",
-      addRandomSuffix: false
-    });
+    // htmlBlob.url is the fully-qualified public URL
+    const urlHtml = htmlBlob.url;
 
-    return NextResponse.json({ ok: true, slug, htmlKey, jsonKey }, { status: 200 });
-  } catch (err) {
-    return NextResponse.json({ url: urlHtml });
+    return NextResponse.json(
+      {
+        ok: true,
+        slug,
+        urlHtml,
+        htmlKey,
+        ...(jsonKey ? { jsonKey } : {}),
+      },
+      { status: 200 }
+    );
+  } catch (err: any) {
+    // Do NOT reference urlHtml here — it doesn’t exist on failure.
+    return NextResponse.json(
+      {
+        ok: false,
+        slug,
+        error: typeof err?.message === "string" ? err.message : String(err),
+      },
+      { status: 500 }
+    );
   }
-}
-
-function sanitizeSlug(s: string) {
-  return s.trim().toLowerCase().replace(/[^a-z0-9-_]/g, "-").replace(/--+/g, "-").replace(/^-+|-+$/g, "");
 }
