@@ -49,7 +49,7 @@ function ensureAtLeastOneImage(html: string, origin: string, instruction: string
   const injected = `<figure style="margin:24px 0;"><img src="${src}" alt="Dish image" style="width:100%;height:auto;border-radius:12px;display:block;object-fit:cover"/></figure>`;
   // try to place after first H1 or at top of <body>
   if (/<h1[^>]*>/i.test(html)) {
-    return html.replace(/(<h1[^>]*>.*?<\/h1>)/is, `$1\n${injected}`);
+    return html.replace(/(<h1[^>]*>[\s\S]*?<\/h1>)/i, `$1\n${injected}`);
   }
   if (/<body[^>]*>/i.test(html)) {
     return html.replace(/(<body[^>]*>)/i, `$1\n${injected}`);
