@@ -9,14 +9,11 @@ const MODEL = "gpt-4o-mini"; // stable + fast
 
 export async function POST(req: NextRequest) {
   try {
-    // Accept prompt from multiple sources to be backward-compatible
     let promptFromBody: string | undefined;
     try {
       const body = (await req.json()) as any;
       promptFromBody = body?.prompt ?? body?.query ?? body?.text;
-    } catch {
-      /* body may be empty or not JSON */
-    }
+    } catch {}
     const promptFromQuery = req.nextUrl.searchParams.get("q") ?? undefined;
 
     const userPrompt = (promptFromBody ?? promptFromQuery ?? "").trim();
@@ -35,7 +32,6 @@ export async function POST(req: NextRequest) {
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Keep instructions light; we sanitize output afterwards
     const messages = [
       {
         role: "system" as const,
@@ -52,11 +48,9 @@ export async function POST(req: NextRequest) {
     });
 
     const raw = (choices[0]?.message?.content ?? "").trim();
-
-    // Minimal post-processing:
     const pure = toPureHtml(raw);
     const withImage = ensureAtLeastOneImage(pure);
-    const html = addNoReferrer(withImage); // normalize & harden images + meta
+    const html = addNoReferrer(withImage);
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
   } catch (err) {
@@ -67,38 +61,28 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/* ---------------- tiny helpers (non-destructive) ---------------- */
+/* ---------------- helpers ---------------- */
 
 function toPureHtml(s: string): string {
   let out = (s ?? "").trim();
-
-  // If the model returned JSON like: { "html": "<html>...</html>" }
   if (out.startsWith("{")) {
     try {
       const j = JSON.parse(out);
       if (j && typeof j.html === "string") out = j.html;
-    } catch {
-      /* ignore parse error */
-    }
+    } catch {}
   }
-
-  // Strip fenced code blocks: ```html ... ``` or ``` ... ```
   const mHtml = out.match(/^```html\s*([\s\S]*?)\s*```$/i);
   if (mHtml) return mHtml[1].trim();
   const mAny = out.match(/^```\s*([\s\S]*?)\s*```$/);
   if (mAny) return mAny[1].trim();
-
   return out;
 }
 
-/** If there are *no* <img> tags, inject a neutral hero at the top of <body> (or document). */
 function ensureAtLeastOneImage(html: string): string {
   if (/<img\b/i.test(html)) return html;
-
   const hero =
     `<img src="https://picsum.photos/1200/630" alt="" ` +
     `style="width:100%;height:auto;border-radius:12px;display:block;margin:16px 0" />`;
-
   if (/(<h1[^>]*>[\s\S]*?<\/h1>)/i.test(html)) {
     return html.replace(/(<h1[^>]*>[\s\S]*?<\/h1>)/i, `$1\n${hero}`);
   }
@@ -108,14 +92,8 @@ function ensureAtLeastOneImage(html: string): string {
   return `${hero}\n${html}`;
 }
 
-function absolutizeProtocolRelative(u: string): string {
-  return u.startsWith("//") ? "https:" + u : u;
-}
-
 function addNoReferrer(html: string): string {
   let out = html || "";
-
-  // Ensure <head> contains meta referrer (matches your working sample)
   const meta = `<meta name="referrer" content="no-referrer">`;
   if (/<head[^>]*>/i.test(out)) {
     if (!/name=["']referrer["']/i.test(out)) {
@@ -127,41 +105,33 @@ function addNoReferrer(html: string): string {
     out = `<head>\n${meta}\n</head>\n` + out;
   }
 
-  // Normalize images: prefer data-src*/srcset → src; fix //host → https://host; reject relative /foo.jpg
+  const absolutize = (u: string) => (u.startsWith("//") ? "https:" + u : u);
+
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
-    let t = tag;
+    const pick = (re: RegExp) => {
+      const m = tag.match(
+        new RegExp(`${re.source}\\s*=\\s*("([^"]+)"|'([^']+)'|([^\\s>]+))`, re.flags)
+      );
+      return (m?.[2] || m?.[3] || m?.[4] || "").trim();
+    };
+    let src =
+      pick(/data-(?:src|original|lazy)/i) ||
+      pick(/src/i) ||
+      (() => {
+        const ss = pick(/srcset/i);
+        if (!ss) return "";
+        const first = (ss.split(",")[0] || "").trim().split(/\s+/)[0] || "";
+        return first;
+      })();
 
-    // prefer data-src / data-original / data-lazy if present
-    const dataSrc = matchAttr(t, /data-(?:src|original|lazy)/i);
-    const srcAttr = matchAttr(t, /src/i);
-    let src = dataSrc || srcAttr || "";
-
-    // if there's a srcset, pick the first HTTPS candidate
-    const srcset = matchAttr(t, /srcset/i);
-    if (!src && srcset) {
-      const first = (srcset.split(",")[0] || "").trim().split(/\s+/)[0] || "";
-      src = first;
-    }
-
-    // absolutize //host/img → https://host/img
-    src = absolutizeProtocolRelative(src);
-
-    // if src is missing or looks relative (/foo.jpg or ./bar.png), replace with a neutral absolute
+    src = absolutize(src);
     if (!/^https?:\/\//i.test(src)) {
-      t = `<img src="https://picsum.photos/800/450" alt=""`;
-    } else {
-      // ensure the tag has this src (normalize onto a single src=)
-      t = t
-        .replace(/\bsrc\s*=\s*(".*?"|'.*?'|[^\s>]+)/i, "") // remove any old src
-        .replace(/^<img\b/i, `<img src="${src}"`); // set normalized src
+      src = "https://picsum.photos/800/450";
     }
 
-    // strip any existing referrer/cors attrs, then append safe ones
-    t = t.replace(/\s(referrerpolicy|crossorigin)\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-    return t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
+    return `<img src="${src}" referrerpolicy="no-referrer" crossorigin="anonymous" loading="eager" decoding="async">`;
   });
 
-  // External links → safe target/rel (mirrors your sample’s intent)
   out = out.replace(/<a\b([^>]*?)>/gi, (tag, attrs) => {
     let t = `<a${attrs}>`;
     if (!/\btarget=/.test(attrs)) t = t.replace(/<a\b/, '<a target="_blank"');
@@ -170,11 +140,6 @@ function addNoReferrer(html: string): string {
   });
 
   return out;
-}
-
-function matchAttr(tag: string, nameRe: RegExp): string | "" {
-  const m = tag.match(new RegExp(`${nameRe.source}\\s*=\\s*("([^"]+)"|'([^']+)'|([^\\s>]+))`, nameRe.flags));
-  return (m?.[2] || m?.[3] || m?.[4] || "").trim();
 }
 
 function slugify(s: string) {
