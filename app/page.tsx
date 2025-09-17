@@ -58,7 +58,7 @@ export default function Home() {
       const url: string | undefined = data?.urlHtml || data?.url || data?.href;
       if (url) {
         setSavedLink(url);
-        window.location.href = url; // also navigate
+        window.location.href = url;
       } else {
         setError("Save succeeded but no URL was returned by /api/save.");
       }
@@ -132,6 +132,7 @@ export default function Home() {
               title="preview"
               className="mt-2 w-full h-[70vh] rounded-lg border"
               srcDoc={html}
+              referrerPolicy="no-referrer"
             />
           </details>
         )}
