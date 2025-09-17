@@ -50,7 +50,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ html, slug: slug || fallbackSlug(prompt) }),
       });
-      const data = await r.json();
+      const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         setError(data?.error || `Save failed: HTTP ${r.status}`);
         return;
@@ -58,8 +58,7 @@ export default function Home() {
       const url: string | undefined = data?.urlHtml || data?.url || data?.href;
       if (url) {
         setSavedLink(url);
-        // also navigate immediately
-        window.location.href = url;
+        window.location.href = url; // also navigate
       } else {
         setError("Save succeeded but no URL was returned by /api/save.");
       }
@@ -73,9 +72,7 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-3xl p-4 sm:p-8">
       <h1 className="text-2xl font-semibold mb-2">Fresh Recipes</h1>
-      <p className="text-slate-600 mb-6">
-        Paste a directive and generate a complete HTML page.
-      </p>
+      <p className="text-slate-600 mb-6">Paste a directive and generate a complete HTML page.</p>
 
       <div className="rounded-xl border p-4 mb-4">
         <label className="block text-sm font-medium mb-2">
@@ -106,14 +103,12 @@ export default function Home() {
         </div>
 
         {error && (
-          <p className="mt-3 text-sm text-red-600">
-            {JSON.stringify({ error })}
-          </p>
+          <p className="mt-3 text-sm text-red-600">{JSON.stringify({ error })}</p>
         )}
 
         {html && (
-          <details className="mt-4">
-            <summary className="cursor-pointer select-none">Preview (inline)</summary>
+          <details className="mt-4" open>
+            <summary className="cursor-pointer select-none">Preview</summary>
             <iframe
               title="preview"
               className="mt-2 w-full h-[70vh] rounded-lg border"
