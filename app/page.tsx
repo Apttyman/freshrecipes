@@ -1,83 +1,35 @@
 // app/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-
-type Health = { ok: boolean; count?: number } | null;
+import { useState } from "react";
 
 export default function Home() {
-  const [instruction, setInstruction] = useState("");
+  const [prompt, setPrompt] = useState("Chicago hot dog");
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [html, setHtml] = useState<string>("");
-  const [health, setHealth] = useState<Health>(null);
-  const [error, setError] = useState<string>("");
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/blob-health", { cache: "no-store" });
-        if (res.ok) setHealth(await res.json());
-        else setHealth({ ok: false });
-      } catch {
-        setHealth({ ok: false });
-      }
-    })();
-  }, []);
-
-  const badge = useMemo(() => {
-    if (!health) return null;
-    return (
-      <span
-        className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ${
-          health.ok
-            ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
-            : "bg-rose-50 text-rose-700 ring-1 ring-rose-200"
-        }`}
-        title={health.ok ? "Blob accessible" : "Blob unavailable"}
-      >
-        <span
-          className={`h-2 w-2 rounded-full ${
-            health.ok ? "bg-emerald-500" : "bg-rose-500"
-          }`}
-        />
-        Blob {health.ok ? "Healthy" : "Unavailable"}
-        {typeof health.count === "number" && (
-          <span className="opacity-70">· {health.count}</span>
-        )}
-      </span>
-    );
-  }, [health]);
-
-  function extractImageUrls(docHtml: string): string[] {
-    const urls = new Set<string>();
-    const re = /<img[^>]*\bsrc=(['"]?)(https?:\/\/[^'">\s)]+)\1/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(docHtml))) urls.add(m[2]);
-    return [...urls];
-  }
+  const [error, setError] = useState<string | null>(null);
+  const [html, setHtml] = useState<string | null>(null);
+  const [slug, setSlug] = useState<string | null>(null);
 
   async function onGenerate() {
-    setError("");
     setLoading(true);
-    setHtml("");
+    setError(null);
+    setHtml(null);
+    setSlug(null);
     try {
-      const res = await fetch("/api/generate", {
+      const r = await fetch("/api/generate", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ instruction }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
       });
-      const txt = await res.text();
-      if (!res.ok) throw new Error(txt || "Generate failed");
-
-      setHtml(txt);
-
-      // Preview in a new tab
-      const blob = new Blob([txt], { type: "text/html;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
+      const data = await r.json();
+      if (!r.ok) {
+        setError(data?.error || `HTTP ${r.status}`);
+        return;
+      }
+      setHtml(data?.html || "");
+      setSlug(data?.slug || "");
     } catch (e: any) {
-      setError(e?.message || "Generate failed");
+      setError(String(e?.message || e || "Request failed"));
     } finally {
       setLoading(false);
     }
@@ -85,165 +37,74 @@ export default function Home() {
 
   async function onSave() {
     if (!html) return;
-    setSaving(true);
-    setError("");
     try {
-      const images = extractImageUrls(html);
-      const res = await fetch("/api/save", {
+      const r = await fetch("/api/save", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        // include query so archive can show description
-        body: JSON.stringify({ html, images, query: instruction }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ html, slug }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || "Save failed");
-      if (data?.url) window.open(data.url, "_blank", "noopener,noreferrer");
+      const data = await r.json();
+      if (!r.ok) {
+        alert(data?.error || `Save failed: HTTP ${r.status}`);
+        return;
+      }
+      // Expecting { urlHtml, urlJson? } from your /api/save
+      if (data?.urlHtml) window.location.href = data.urlHtml;
     } catch (e: any) {
-      setError(e?.message || "Save failed");
-    } finally {
-      setSaving(false);
+      alert(String(e?.message || e || "Save failed"));
     }
   }
 
   return (
-    <div className="min-h-dvh bg-[radial-gradient(1200px_800px_at_110%_-10%,rgba(46,91,255,.08),transparent_60%),radial-gradient(900px_700px_at_-10%_0%,rgba(20,184,166,.06),transparent_60%),linear-gradient(#fafbfc,#f7f8fb)]">
-      {/* Top bar */}
-      <header className="relative z-10 border-b border-black/5 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-md bg-gradient-to-br from-blue-500 to-teal-400 shadow-sm" />
-            <span className="text-sm font-semibold tracking-wide text-slate-800">
-              FreshRecipes
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            {badge}
-            <a
-              href="/archive"
-              className="rounded-full border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Archive
-            </a>
-          </div>
+    <main className="mx-auto max-w-3xl p-4 sm:p-8">
+      <h1 className="text-2xl font-semibold mb-2">Fresh Recipes</h1>
+      <p className="text-slate-600 mb-6">
+        Paste a directive and generate a complete HTML page.
+      </p>
+
+      <div className="rounded-xl border p-4 mb-4">
+        <label className="block text-sm font-medium mb-2">
+          What should we fetch &amp; render?
+        </label>
+        <textarea
+          className="w-full rounded-lg border p-3 min-h-[96px] text-base"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="e.g., 3 iconic Peruvian chicken recipes"
+        />
+        <div className="mt-3 flex gap-3">
+          <button
+            onClick={onGenerate}
+            disabled={loading}
+            className="rounded-lg bg-blue-600 text-white px-4 py-2 disabled:opacity-60"
+          >
+            {loading ? "Generating…" : "Generate HTML"}
+          </button>
+          <button
+            onClick={onSave}
+            disabled={!html}
+            className="rounded-lg border px-4 py-2 disabled:opacity-60"
+          >
+            Save to Archive
+          </button>
         </div>
-      </header>
 
-      {/* Hero + Generator only */}
-      <section className="relative overflow-hidden border-b border-black/5 bg-white">
-        <div className="mx-auto max-w-4xl px-4 py-12 md:py-16">
-          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-            <span className="h-2 w-2 rounded-full bg-blue-500" />
-            Chef-authored recipes · Polished HTML output
-          </div>
-          <h1 className="mt-2 text-4xl font-extrabold tracking-tight text-slate-900 md:text-5xl">
-            Generate editorial-quality recipe pages in one click.
-          </h1>
-          <p className="mt-4 max-w-prose text-base leading-7 text-slate-600">
-            Paste a directive (e.g., “3 iconic Peruvian chicken recipes from
-            renowned chefs”). You’ll get a complete HTML page styled to your
-            spec — ready to preview and archive.
+        {error && (
+          <p className="mt-3 text-sm text-red-600">
+            {JSON.stringify({ error })}
           </p>
-
-          {/* Generator form */}
-          <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <label
-              htmlFor="instruction"
-              className="mb-2 block text-sm font-semibold text-slate-800"
-            >
-              What should we fetch &amp; render?
-            </label>
-            <textarea
-              id="instruction"
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              placeholder='Example: "3 authentic Peruvian chicken recipes by well-known chefs, with step images if available."'
-              className="h-28 w-full resize-vertical rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 outline-none ring-0 placeholder:text-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-200"
+        )}
+        {html && (
+          <details className="mt-4">
+            <summary className="cursor-pointer select-none">Preview (inline)</summary>
+            <iframe
+              title="preview"
+              className="mt-2 w-full h-[70vh] rounded-lg border"
+              srcDoc={html}
             />
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                onClick={onGenerate}
-                disabled={loading || !instruction.trim()}
-                className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? "Generating…" : "Generate HTML"}
-              </button>
-              <button
-                onClick={onSave}
-                disabled={saving || !html}
-                className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {saving ? "Saving…" : "Save to Archive"}
-              </button>
-              {error && (
-                <span className="text-sm font-medium text-rose-600">{error}</span>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* FAQ only (kept) */}
-      <section className="border-t border-black/5 bg-white">
-        <div className="mx-auto max-w-4xl px-4 py-12">
-          <h2 className="text-2xl font-bold text-slate-900">FAQ</h2>
-          <div className="mt-6 divide-y divide-slate-200">
-            <details className="group py-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between text-slate-800">
-                How do I preview the generated page?
-                <span className="text-slate-400 group-open:rotate-180">⌄</span>
-              </summary>
-              <p className="mt-2 text-sm text-slate-600">
-                After you click <em>Generate HTML</em>, a new tab opens with the
-                full page. You can then save it to the Archive.
-              </p>
-            </details>
-            <details className="group py-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between text-slate-800">
-                Can I save and share the result?
-                <span className="text-slate-400 group-open:rotate-180">⌄</span>
-              </summary>
-              <p className="mt-2 text-sm text-slate-600">
-                Yes. Use <em>Save to Archive</em> — you’ll get a public Blob URL
-                you can share.
-              </p>
-            </details>
-            <details className="group py-4">
-              <summary className="flex cursor-pointer list-none items-center justify-between text-slate-800">
-                What if an image host blocks requests?
-                <span className="text-slate-400 group-open:rotate-180">⌄</span>
-              </summary>
-              <p className="mt-2 text-sm text-slate-600">
-                Images are proxied via <code>/api/img</code> for reliability. In
-                the archive, images can be re-hosted to Blob for permanence.
-              </p>
-            </details>
-          </div>
-        </div>
-      </section>
-
-      <footer className="border-t border-black/5 bg-white">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-8 text-center md:flex-row md:text-left">
-          <p className="text-sm text-slate-500">
-            © {new Date().getFullYear()} FreshRecipes. All rights reserved.
-          </p>
-          <nav className="flex items-center gap-4 text-sm">
-            <a
-              className="text-slate-500 hover:text-slate-700"
-              href="/archive"
-              aria-label="Open archive"
-            >
-              Archive
-            </a>
-            <a
-              className="text-slate-500 hover:text-slate-700"
-              href="/api/health"
-              aria-label="Health check"
-            >
-              Health
-            </a>
-          </nav>
-        </div>
-      </footer>
-    </div>
+          </details>
+        )}
+      </div>
+    </main>
   );
 }
