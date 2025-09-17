@@ -4,7 +4,13 @@ import OpenAI from "openai";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { toPureHtml, addNoReferrer, rewriteImagesToCloudinary } from "@/app/lib/html-tools";
-
+// ⬇️ use relative path (no alias)
+import {
+  toPureHtml,
+  ensureAtLeastOneImage,
+  addNoReferrer,
+  rewriteImagesToCloudinary,
+} from "../../lib/html-tools";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
