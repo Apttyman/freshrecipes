@@ -5,137 +5,109 @@ import OpenAI from "openai";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const MODEL = "gpt-4o-mini";
+const MODEL = "gpt-4o-mini"; // stable + fast
 
 export async function POST(req: NextRequest) {
   try {
     const { prompt } = (await req.json().catch(() => ({}))) as { prompt?: string };
-    const userPrompt = (prompt && prompt.trim()) || "Two dog recipes";
+    const userPrompt = (prompt ?? "").trim();
 
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY
-    });
+    if (!userPrompt) {
+      return NextResponse.json({ error: "Missing prompt", html: "", slug: "" }, { status: 400 });
+    }
+    if (!process.env.OPENAI_API_KEY) {
+      // Return a 200 with helpful HTML so your UI doesn't just say "Load failed"
+      const msg =
+        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
+      return NextResponse.json({ html: msg, slug: slugify(userPrompt) }, { status: 200 });
+    }
 
-    const sys = [
-      "You are a chef + food editor.",
-      "Return ONLY a complete standalone HTML5 document (<html>…</html>) with inline <style>.",
-      "Use elegant, modern CSS (no frameworks).",
-      // The model can try, but we'll enforce in post-process too.
-      "All <img> tags SHOULD include referrerpolicy=\"no-referrer\" and crossorigin=\"anonymous\".",
-      "Do NOT fetch external CSS/JS; keep everything inline.",
-      "Document must be visually polished and readable on mobile and desktop."
-    ].join(" ");
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    // Keep instructions minimal; we sanitize after
+    const messages = [
+      {
+        role: "system" as const,
+        content:
+          "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>. Do not include Markdown code fences or JSON.",
+      },
+      { role: "user" as const, content: userPrompt },
+    ];
 
     const { choices } = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.7,
-      messages: [
-        { role: "system", content: sys },
-        {
-          role: "user",
-          content:
-            `Create a beautiful recipe page for: ${userPrompt}.
-             Include a hero image and at least 2 recipe sections with ingredients and steps.
-             Use headings, cards, and a tasteful color palette.`
-        }
-      ]
+      messages,
     });
 
     const raw = (choices[0]?.message?.content ?? "").trim();
-    const baseHtml = raw.includes("<html") ? raw : wrapAsHtml(raw, userPrompt);
 
-    // 🔧 Enforce no-referrer across the entire document (images + meta)
-    const html = enforceNoReferrer(baseHtml);
+    // Minimal post-processing:
+    const pure = toPureHtml(raw);
+    const html = addNoReferrer(pure);
 
-    const slug = slugify(userPrompt);
-    return NextResponse.json({ html, slug }, { status: 200 });
+    return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
   } catch (err) {
+    // Return the error in JSON so the client can surface it
     return NextResponse.json(
-      { error: String(err) || "Generation failed" },
+      { error: String(err || "Generation failed"), html: "", slug: "" },
       { status: 500 }
     );
   }
 }
 
-function slugify(s: string) {
-  return s.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
-}
+/* ---------------- tiny helpers (non-destructive) ---------------- */
 
-/**
- * Ensures:
- *  - every <img ...> has referrerpolicy="no-referrer" and crossorigin="anonymous"
- *  - <meta name="referrer" content="no-referrer"> is present in <head>
- */
-function enforceNoReferrer(html: string): string {
-  let out = html;
+function toPureHtml(s: string): string {
+  let out = (s ?? "").trim();
 
-  // 1) Inject/ensure meta in <head>
-  const hasHead = /<head[^>]*>/i.test(out);
-  const metaTag = `<meta name="referrer" content="no-referrer">`;
-  if (hasHead) {
-    if (!/<!--\s*referrer-meta\s*-->/.test(out) && !/name=["']referrer["']/i.test(out)) {
-      out = out.replace(/<head[^>]*>/i, (m) => `${m}\n${metaTag}`);
-    }
-  } else {
-    // no <head> — inject one at the top of document
-    out = out.replace(/<html[^>]*>/i, (m) => `${m}\n<head>\n${metaTag}\n</head>`);
-    if (out === html) {
-      // Still no match? Prepend a minimal head.
-      out = `<head>\n${metaTag}\n</head>\n` + out;
+  // If the model returned JSON like: { "html": "<html>...</html>" }
+  if (out.startsWith("{")) {
+    try {
+      const j = JSON.parse(out);
+      if (j && typeof j.html === "string") out = j.html;
+    } catch {
+      /* ignore parse error */
     }
   }
 
-  // 2) Rewrite all <img> tags
-  out = out.replace(/<img\b[^>]*>/gi, (tag) => rewriteImgTag(tag));
+  // Strip fenced code blocks: ```html ... ``` or ``` ... ```
+  const mHtml = out.match(/^```html\s*([\s\S]*?)\s*```$/i);
+  if (mHtml) return mHtml[1].trim();
+  const mAny = out.match(/^```\s*([\s\S]*?)\s*```$/);
+  if (mAny) return mAny[1].trim();
 
   return out;
 }
 
-function rewriteImgTag(tag: string): string {
-  let t = tag;
+function addNoReferrer(html: string): string {
+  let out = html || "";
 
-  // Drop any existing referrerpolicy/crossorigin to avoid duplicates
-  t = t.replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-  t = t.replace(/\scrossorigin\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
+  // Ensure <head> contains meta referrer
+  const meta = `<meta name="referrer" content="no-referrer">`;
+  if (/<head[^>]*>/i.test(out)) {
+    if (!/name=["']referrer["']/i.test(out)) {
+      out = out.replace(/<head[^>]*>/i, (m) => `${m}\n${meta}`);
+    }
+  } else if (/<html[^>]*>/i.test(out)) {
+    out = out.replace(/<html[^>]*>/i, (m) => `${m}\n<head>\n${meta}\n</head>`);
+  } else {
+    // Not a full document—be gentle and prepend a minimal head
+    out = `<head>\n${meta}\n</head>\n` + out;
+  }
 
-  // Ensure a trailing space before '>'
-  t = t.replace(/>$/, " >");
+  // Add attributes to every <img> (preserve "/>" if present)
+  out = out.replace(/<img\b[^>]*>/gi, (tag) => {
+    let t = tag
+      .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
+      .replace(/\scrossorigin\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
+    t = t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
+    return t.replace(/\s{2,}/g, " ");
+  });
 
-  // Inject the attributes just before '>'
-  t = t.replace(/>$/, ` referrerpolicy="no-referrer" crossorigin="anonymous">`);
-
-  // Tidy up spaces
-  t = t.replace(/\s{2,}/g, " ");
-
-  return t;
+  return out;
 }
 
-function wrapAsHtml(content: string, title: string) {
-  const esc = (x: string) =>
-    x.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]!));
-  const css = `
-    :root{--fg:#0f172a;--muted:#475569;--ring:#e2e8f0;--bg:#fff}
-    *{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial;color:var(--fg);background:var(--bg);line-height:1.6}
-    .wrap{max-width:760px;margin:0 auto;padding:24px}
-    h1{font-size:30px;letter-spacing:-0.02em;margin:0 0 12px}
-    p.lead{color:var(--muted);margin:0 0 16px}
-    .card{border:1px solid var(--ring);border-radius:12px;padding:16px;margin:16px 0}
-    img{width:100%;height:auto;border-radius:10px;display:block}
-    a.btn{display:inline-block;border:1px solid var(--ring);padding:8px 12px;border-radius:10px;text-decoration:none;color:inherit}
-    a.btn:hover{background:#f8fafc}
-    pre{white-space:pre-wrap}
-  `;
-  return `<!doctype html><html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta name="referrer" content="no-referrer">
-<title>${esc(title)}</title>
-<style>${css}</style>
-</head>
-<body><div class="wrap">
-<header><h1>${esc(title)}</h1><p class="lead">Generated content</p></header>
-<article class="card"><pre>${esc(content)}</pre></article>
-<footer><a class="btn" href="/archive">Back to Archive</a></footer>
-</div></body></html>`;
+function slugify(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 }
