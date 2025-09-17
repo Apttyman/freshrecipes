@@ -9,14 +9,25 @@ const MODEL = "gpt-4o-mini"; // stable + fast
 
 export async function POST(req: NextRequest) {
   try {
-    const { prompt } = (await req.json().catch(() => ({}))) as { prompt?: string };
-    const userPrompt = (prompt ?? "").trim();
-
-    if (!userPrompt) {
-      return NextResponse.json({ error: "Missing prompt", html: "", slug: "" }, { status: 400 });
+    // Accept prompt from multiple sources to be backward-compatible
+    let promptFromBody: string | undefined;
+    try {
+      const body = (await req.json()) as any;
+      promptFromBody = body?.prompt ?? body?.query ?? body?.text;
+    } catch {
+      // no-op; body might be empty or not JSON
     }
+    const promptFromQuery = req.nextUrl.searchParams.get("q") ?? undefined;
+
+    const userPrompt = (promptFromBody ?? promptFromQuery ?? "").trim();
+    if (!userPrompt) {
+      return NextResponse.json(
+        { error: "Missing prompt", html: "", slug: "" },
+        { status: 400 }
+      );
+    }
+
     if (!process.env.OPENAI_API_KEY) {
-      // Return a 200 with helpful HTML so your UI doesn't just say "Load failed"
       const msg =
         "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
       return NextResponse.json({ html: msg, slug: slugify(userPrompt) }, { status: 200 });
@@ -24,12 +35,12 @@ export async function POST(req: NextRequest) {
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Keep instructions minimal; we sanitize after
+    // Keep the instructions light; we sanitize output afterwards
     const messages = [
       {
         role: "system" as const,
         content:
-          "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>. Do not include Markdown code fences or JSON.",
+          "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>. Do not include Markdown fences or JSON.",
       },
       { role: "user" as const, content: userPrompt },
     ];
@@ -48,7 +59,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
   } catch (err) {
-    // Return the error in JSON so the client can surface it
     return NextResponse.json(
       { error: String(err || "Generation failed"), html: "", slug: "" },
       { status: 500 }
@@ -92,7 +102,6 @@ function addNoReferrer(html: string): string {
   } else if (/<html[^>]*>/i.test(out)) {
     out = out.replace(/<html[^>]*>/i, (m) => `${m}\n<head>\n${meta}\n</head>`);
   } else {
-    // Not a full document—be gentle and prepend a minimal head
     out = `<head>\n${meta}\n</head>\n` + out;
   }
 
