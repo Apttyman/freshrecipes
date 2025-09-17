@@ -71,8 +71,19 @@ export default function Home() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 sm:p-8">
-      <h1 className="text-2xl font-semibold mb-2">Fresh Recipes</h1>
-      <p className="text-slate-600 mb-6">Paste a directive and generate a complete HTML page.</p>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Fresh Recipes</h1>
+        <a
+          href="/archive"
+          className="rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
+        >
+          Open Archive
+        </a>
+      </div>
+
+      <p className="text-slate-600 mb-6">
+        Paste a directive and generate a complete HTML page.
+      </p>
 
       <div className="rounded-xl border p-4 mb-4">
         <label className="block text-sm font-medium mb-2">
@@ -85,7 +96,7 @@ export default function Home() {
           placeholder="e.g., 3 iconic Peruvian chicken recipes"
         />
 
-        <div className="mt-3 flex gap-3">
+        <div className="mt-3 flex flex-wrap gap-3">
           <button
             onClick={onGenerate}
             disabled={generating}
@@ -100,10 +111,18 @@ export default function Home() {
           >
             {saving ? "Saving…" : "Save to Archive"}
           </button>
+          <a
+            href="/archive"
+            className="rounded-lg border px-4 py-2 text-sm hover:bg-slate-50"
+          >
+            View Archive
+          </a>
         </div>
 
         {error && (
-          <p className="mt-3 text-sm text-red-600">{JSON.stringify({ error })}</p>
+          <p className="mt-3 text-sm text-red-600">
+            {JSON.stringify({ error })}
+          </p>
         )}
 
         {html && (
