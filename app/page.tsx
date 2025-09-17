@@ -40,7 +40,7 @@ export default function Home() {
   }
 
   async function onSave() {
-    if (!html) return;
+    if (!html?.trim()) return;
     setSaving(true);
     setError(null);
     setSavedLink(null);
@@ -96,21 +96,27 @@ export default function Home() {
           placeholder="e.g., 3 iconic Peruvian chicken recipes"
         />
 
-        <div className="mt-3 flex flex-wrap gap-3">
+        <div className="mt-3 flex flex-wrap gap-3 relative z-10">
           <button
+            type="button"
             onClick={onGenerate}
             disabled={generating}
             className="rounded-lg bg-blue-600 text-white px-4 py-2 disabled:opacity-60"
           >
             {generating ? "Generating…" : "Generate HTML"}
           </button>
+
           <button
+            type="button"
             onClick={onSave}
-            disabled={!html || saving}
+            // clickable unless actively saving or empty html
+            disabled={saving || !html?.trim()}
             className="rounded-lg border px-4 py-2 disabled:opacity-60"
+            aria-disabled={saving || !html?.trim()}
           >
             {saving ? "Saving…" : "Save to Archive"}
           </button>
+
           <a
             href="/archive"
             className="rounded-lg border px-4 py-2 text-sm hover:bg-slate-50"
@@ -126,15 +132,15 @@ export default function Home() {
         )}
 
         {html && (
-          <details className="mt-4" open>
-            <summary className="cursor-pointer select-none">Preview</summary>
+          <section className="mt-4 relative">
+            {/* keep iframe under the buttons; ensure it can't overlap them */}
             <iframe
               title="preview"
-              className="mt-2 w-full h-[70vh] rounded-lg border"
+              className="mt-2 w-full h-[70vh] rounded-lg border block relative z-0"
               srcDoc={html}
               referrerPolicy="no-referrer"
             />
-          </details>
+          </section>
         )}
 
         {savedLink && (
