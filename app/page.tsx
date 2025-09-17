@@ -1,162 +1,258 @@
 // app/page.tsx
 "use client";
 
-import { useState, useRef } from "react";
+import React, { useState } from "react";
+import Link from "next/link";
 
-export default function Home() {
+export default function HomePage() {
   const [prompt, setPrompt] = useState("");
-  const [previewHtml, setPreviewHtml] = useState<string>("");
+  const [html, setHtml] = useState<string>("");
   const [slug, setSlug] = useState<string>("");
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string>("");
   const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string>(""); // shows real error/success text
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [loading, setLoading] = useState(false);
 
-  async function onGenerate() {
-    setMsg("");
-    setPreviewHtml("");
+  async function handleGenerate() {
+    setStatus("");
+    setLoading(true);
+    setHtml("");
     setSlug("");
-    setBusy(true);
+
     try {
-      const r = await fetch("/api/generate", {
+      const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
 
-      // Try to parse JSON; fall back to text
-      let data: any = null;
-      try { data = await r.json(); } catch { /* fall through */ }
+      // Non-200? Still try to read the body for debug
+      const data = await res.json().catch(() => ({} as any));
 
-      if (!r.ok) {
-        const errText = (data && (data.error || data.message)) || `HTTP ${r.status}`;
-        setMsg(errText);                      // << show exact server error
-        return;
+      // Expecting: { html, slug, rawSnippet?, error? }
+      const pageHtml = (data?.html ?? "").toString();
+      const newSlug = (data?.slug ?? "").toString();
+
+      if (pageHtml.trim()) {
+        setHtml(pageHtml);
+        setSlug(newSlug);
+      } else {
+        // Visible debug right in the page (no DevTools needed)
+        const dbg = `
+<pre style="white-space:pre-wrap;font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#b00020; padding:12px; border:1px solid #f3c; border-radius:8px; background:#fff5f8">
+⚠️ Debug: No HTML returned by /api/generate
+HTTP: ${res.status} ${res.statusText || ""}
+Error: ${data?.error || "(none)"}
+
+Raw snippet:
+${(data?.rawSnippet ?? "").toString() || "(empty)"}
+</pre>`;
+        setHtml(dbg);
+        setSlug(newSlug);
       }
+    } catch (err: any) {
+      setHtml(
+        `<pre style="white-space:pre-wrap;font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#b00020; padding:12px; border:1px dashed #f99; border-radius:8px; background:#fff5f8">
+🚫 Network error calling /api/generate
 
-      const html = String(data?.html || "");
-      const slugValue = String(data?.slug || "");
-      if (!html) {
-        setMsg("Generator returned empty HTML.");
-        return;
-      }
-
-      setPreviewHtml(html);
-      setSlug(slugValue);
-
-      // Render inline preview
-      if (iframeRef.current) {
-        const doc = iframeRef.current.contentWindow?.document;
-        if (doc) {
-          doc.open();
-          doc.write(html);
-          doc.close();
-        }
-      }
-    } catch (e: any) {
-      setMsg(String(e?.message || e || "Generate failed"));
+${String(err)}
+</pre>`
+      );
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   }
 
-  async function onSave() {
-    if (!previewHtml || !slug) {
-      setMsg("Nothing to save yet.");
+  async function handleSave() {
+    if (!html.trim()) {
+      setStatus("Nothing to save yet.");
       return;
     }
     setSaving(true);
-    setMsg("");
+    setStatus("");
+
     try {
-      const r = await fetch("/api/save", {
+      const res = await fetch("/api/save", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ html: previewHtml, slug }),
+        body: JSON.stringify({ slug, html }),
       });
 
-      let data: any = null;
-      try { data = await r.json(); } catch { /* fall through */ }
+      const data = await res.json().catch(() => ({} as any));
 
-      if (!r.ok) {
-        const errText = (data && (data.error || data.message)) || `HTTP ${r.status}`;
-        setMsg(errText);
-        return;
-      }
+      // Prefer API-provided URL; otherwise fall back to pretty route
+      const url =
+        (data?.url as string) ||
+        (slug ? `/recipes/${encodeURIComponent(slug)}` : "");
 
-      const url = String(data?.url || "");
-      if (!url) {
-        setMsg("Save succeeded but no URL was returned by /api/save.");
-        return;
+      if (res.ok && url) {
+        setStatus(`✅ Saved. Open: ${url}`);
+      } else if (res.ok) {
+        setStatus(
+          `⚠️ Save succeeded but no URL was returned by /api/save. Slug: ${slug || "(none)"}`
+        );
+      } else {
+        setStatus(`❌ Save failed: ${data?.error || res.statusText}`);
       }
-      setMsg(`Saved ✓  →  ${url}`);
-      // Optionally auto-open:
-      // window.location.href = url;
-    } catch (e: any) {
-      setMsg(String(e?.message || e || "Save failed"));
+    } catch (err: any) {
+      setStatus(`❌ Save error: ${String(err)}`);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <main className="mx-auto max-w-3xl p-4 sm:p-8">
-      <header className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold">Fresh Recipes</h1>
-        <a
+    <main style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          justifyContent: "space-between",
+          marginBottom: 16,
+        }}
+      >
+        <h1 style={{ fontSize: 32, fontWeight: 800, margin: 0 }}>
+          Fresh Recipes
+        </h1>
+        <Link
           href="/archive"
-          className="inline-block rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
+          style={{
+            border: "1px solid #ddd",
+            borderRadius: 10,
+            padding: "10px 14px",
+            textDecoration: "none",
+            background: "#f7f7f7",
+          }}
         >
           Open Archive
-        </a>
+        </Link>
       </header>
 
-      <section className="rounded-xl border p-4 sm:p-6">
-        <label className="block text-lg font-semibold mb-2">
+      <section
+        style={{
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          padding: 16,
+          marginBottom: 16,
+          background: "#fff",
+        }}
+      >
+        <label
+          htmlFor="prompt"
+          style={{ display: "block", fontWeight: 700, marginBottom: 8 }}
+        >
           What should we fetch &amp; render?
         </label>
         <textarea
-          className="w-full rounded-lg border p-3 font-medium outline-none"
-          rows={4}
+          id="prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder='e.g. "3 iconic homemade ice cream recipes with cool photos"'
+          placeholder='e.g. "3 recipes of homemade ice cream with cool photos"'
+          rows={4}
+          style={{
+            width: "100%",
+            border: "1px solid #d1d5db",
+            borderRadius: 12,
+            padding: 12,
+            fontSize: 16,
+            outline: "none",
+          }}
         />
 
-        <div className="mt-4 flex gap-3">
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+            marginTop: 14,
+          }}
+        >
           <button
-            onClick={onGenerate}
-            disabled={busy || !prompt.trim()}
-            className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-50"
+            onClick={handleGenerate}
+            disabled={loading || !prompt.trim()}
+            style={{
+              cursor: loading || !prompt.trim() ? "not-allowed" : "pointer",
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              borderRadius: 12,
+              padding: "14px 18px",
+              fontWeight: 700,
+              minWidth: 180,
+            }}
           >
-            {busy ? "Generating…" : "Generate HTML"}
+            {loading ? "Generating…" : "Generate HTML"}
           </button>
 
           <button
-            onClick={onSave}
-            disabled={!previewHtml || !slug || saving}
-            className="rounded-lg border px-4 py-2 font-semibold disabled:opacity-50"
+            onClick={handleSave}
+            disabled={saving || !html.trim()}
+            style={{
+              cursor: saving || !html.trim() ? "not-allowed" : "pointer",
+              background: "#111827",
+              color: "#fff",
+              border: "none",
+              borderRadius: 12,
+              padding: "14px 18px",
+              fontWeight: 700,
+              minWidth: 180,
+              opacity: html.trim() ? 1 : 0.4,
+            }}
           >
             {saving ? "Saving…" : "Save to Archive"}
           </button>
         </div>
 
-        {msg && (
-          <p className="mt-3 text-sm text-red-600 break-words">
-            {JSON.stringify({ error: msg })}
+        {status && (
+          <p
+            style={{
+              marginTop: 10,
+              color: status.startsWith("✅") ? "#065f46" : "#b00020",
+              fontSize: 14,
+              wordBreak: "break-word",
+            }}
+          >
+            {status.startsWith("✅") ? (
+              <>
+                ✅ Saved.{" "}
+                <a
+                  href={status.replace(/^✅ Saved\. Open:\s*/, "")}
+                  style={{ color: "#2563eb" }}
+                >
+                  Open saved page
+                </a>
+              </>
+            ) : (
+              status
+            )}
           </p>
         )}
       </section>
 
-      {previewHtml && (
-        <details className="mt-6 rounded-xl border">
-          <summary className="cursor-pointer p-3 font-semibold">
-            Preview (inline)
-          </summary>
-          <div className="p-3">
-            <iframe ref={iframeRef} className="w-full h-[70vh] rounded-lg border" />
-          </div>
-        </details>
-      )}
+      <details open style={{ marginTop: 8 }}>
+        <summary
+          style={{
+            fontWeight: 700,
+            cursor: "pointer",
+            marginBottom: 8,
+          }}
+        >
+          Preview (inline)
+        </summary>
+
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            background: "#fff",
+            padding: 12,
+            minHeight: 240,
+            overflow: "auto",
+          }}
+          // On purpose: this is a preview surface for fully-formed HTML
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </details>
     </main>
   );
 }
