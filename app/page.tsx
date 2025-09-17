@@ -58,7 +58,7 @@ export default function Home() {
       const url: string | undefined = data?.urlHtml || data?.url || data?.href;
       if (url) {
         setSavedLink(url);
-        window.location.href = url;
+        // Keep on page; user can tap saved link or Open Archive
       } else {
         setError("Save succeeded but no URL was returned by /api/save.");
       }
@@ -109,38 +109,18 @@ export default function Home() {
           <button
             type="button"
             onClick={onSave}
-            // clickable unless actively saving or empty html
             disabled={saving || !html?.trim()}
             className="rounded-lg border px-4 py-2 disabled:opacity-60"
             aria-disabled={saving || !html?.trim()}
           >
             {saving ? "Saving…" : "Save to Archive"}
           </button>
-
-          <a
-            href="/archive"
-            className="rounded-lg border px-4 py-2 text-sm hover:bg-slate-50"
-          >
-            View Archive
-          </a>
         </div>
 
         {error && (
           <p className="mt-3 text-sm text-red-600">
             {JSON.stringify({ error })}
           </p>
-        )}
-
-        {html && (
-          <section className="mt-4 relative">
-            {/* keep iframe under the buttons; ensure it can't overlap them */}
-            <iframe
-              title="preview"
-              className="mt-2 w-full h-[70vh] rounded-lg border block relative z-0"
-              srcDoc={html}
-              referrerPolicy="no-referrer"
-            />
-          </section>
         )}
 
         {savedLink && (
@@ -150,6 +130,18 @@ export default function Home() {
               {savedLink}
             </a>
           </p>
+        )}
+
+        {html && (
+          <section className="mt-4 relative">
+            {/* Preview under buttons; cannot intercept clicks */}
+            <iframe
+              title="preview"
+              className="mt-2 w-full h-[70vh] rounded-lg border block relative z-0"
+              srcDoc={html}
+              referrerPolicy="no-referrer"
+            />
+          </section>
         )}
       </div>
     </main>
