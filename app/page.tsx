@@ -5,13 +5,17 @@ import { useState } from "react";
 
 export default function Home() {
   const [prompt, setPrompt] = useState("Chicago hot dog");
-  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [html, setHtml] = useState<string | null>(null);
   const [slug, setSlug] = useState<string | null>(null);
+  const [savedLink, setSavedLink] = useState<string | null>(null);
 
   async function onGenerate() {
-    setLoading(true);
+    setGenerating(true);
+    setSaving(false);
+    setSavedLink(null);
     setError(null);
     setHtml(null);
     setSlug(null);
@@ -31,27 +35,38 @@ export default function Home() {
     } catch (e: any) {
       setError(String(e?.message || e || "Request failed"));
     } finally {
-      setLoading(false);
+      setGenerating(false);
     }
   }
 
   async function onSave() {
     if (!html) return;
+    setSaving(true);
+    setError(null);
+    setSavedLink(null);
     try {
       const r = await fetch("/api/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ html, slug }),
+        body: JSON.stringify({ html, slug: slug || fallbackSlug(prompt) }),
       });
       const data = await r.json();
       if (!r.ok) {
-        alert(data?.error || `Save failed: HTTP ${r.status}`);
+        setError(data?.error || `Save failed: HTTP ${r.status}`);
         return;
       }
-      // Expecting { urlHtml, urlJson? } from your /api/save
-      if (data?.urlHtml) window.location.href = data.urlHtml;
+      const url: string | undefined = data?.urlHtml || data?.url || data?.href;
+      if (url) {
+        setSavedLink(url);
+        // also navigate immediately
+        window.location.href = url;
+      } else {
+        setError("Save succeeded but no URL was returned by /api/save.");
+      }
     } catch (e: any) {
-      alert(String(e?.message || e || "Save failed"));
+      setError(String(e?.message || e || "Save failed"));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -72,20 +87,21 @@ export default function Home() {
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="e.g., 3 iconic Peruvian chicken recipes"
         />
+
         <div className="mt-3 flex gap-3">
           <button
             onClick={onGenerate}
-            disabled={loading}
+            disabled={generating}
             className="rounded-lg bg-blue-600 text-white px-4 py-2 disabled:opacity-60"
           >
-            {loading ? "Generating…" : "Generate HTML"}
+            {generating ? "Generating…" : "Generate HTML"}
           </button>
           <button
             onClick={onSave}
-            disabled={!html}
+            disabled={!html || saving}
             className="rounded-lg border px-4 py-2 disabled:opacity-60"
           >
-            Save to Archive
+            {saving ? "Saving…" : "Save to Archive"}
           </button>
         </div>
 
@@ -94,6 +110,7 @@ export default function Home() {
             {JSON.stringify({ error })}
           </p>
         )}
+
         {html && (
           <details className="mt-4">
             <summary className="cursor-pointer select-none">Preview (inline)</summary>
@@ -104,7 +121,20 @@ export default function Home() {
             />
           </details>
         )}
+
+        {savedLink && (
+          <p className="mt-3 text-sm">
+            Saved:{" "}
+            <a href={savedLink} className="underline" target="_blank" rel="noreferrer">
+              {savedLink}
+            </a>
+          </p>
+        )}
       </div>
     </main>
   );
+}
+
+function fallbackSlug(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 }
