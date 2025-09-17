@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, slug, htmlKey, jsonKey }, { status: 200 });
   } catch (err) {
-    return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
+    return NextResponse.json({ url: urlHtml });
   }
 }
 
