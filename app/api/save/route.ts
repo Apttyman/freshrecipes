@@ -2,55 +2,73 @@
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 
-// Optional: re-import helpers if you keep them DRY in a shared utils file
-async function rehostImages(html: string): Promise<string> {
-  if (!html) return html;
-  return html.replace(/<img\s+[^>]*src=["']([^"']+)["'][^>]*>/gi, (tag, src) => {
-    if (!/^https?:\/\//i.test(src)) return tag;
-    const proxied = `/api/rehost?url=${encodeURIComponent(src)}`;
-    return tag.replace(src, proxied);
-  });
-}
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as { slug?: string; html?: string };
-    const slug = (body?.slug ?? "").trim();
-    const rawHtml = (body?.html ?? "").trim();
-
-    if (!slug || !rawHtml) {
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
+    if (!token) {
       return NextResponse.json(
-        { error: "Missing slug or html" },
+        { error: "BLOB_READ_WRITE_TOKEN is not set" },
+        { status: 500 }
+      );
+    }
+
+    const body = (await req.json()) as any;
+    const html = String(body?.html ?? "");
+    const slug = String(body?.slug ?? "").trim() || "recipe";
+
+    if (!html) {
+      return NextResponse.json(
+        { error: "Missing html" },
         { status: 400 }
       );
     }
 
-    // Ensure we rehost before persisting
-    const finalHtml = await rehostImages(rawHtml);
+    // Save HTML and a tiny JSON sidecar
+    const ts = Date.now();
+    const htmlKey = `recipes/${slug}-${ts}.html`;
+    const jsonKey = `recipes/${slug}-${ts}.json`;
 
-    // Persist to Vercel Blob storage
-    const htmlKey = `recipes/${slug}.html`;
-    await put(htmlKey, finalHtml, { access: "public", contentType: "text/html" });
-
-    const jsonKey = `recipes/${slug}.json`;
-    await put(jsonKey, JSON.stringify({ slug, html: finalHtml }), {
+    await put(htmlKey, Buffer.from(html, "utf8"), {
       access: "public",
-      contentType: "application/json",
+      contentType: "text/html; charset=utf-8",
+      addRandomSuffix: false,
+      token,
     });
 
-    return NextResponse.json(
+    await put(
+      jsonKey,
+      Buffer.from(
+        JSON.stringify(
+          {
+            slug,
+            uploadedAt: new Date(ts).toISOString(),
+            kind: "recipe",
+            // Link to the HTML asset
+            htmlKey,
+          },
+          null,
+          2
+        ),
+        "utf8"
+      ),
       {
-        ok: true,
-        slug,
-        htmlKey,
-        jsonKey,
-        url: `/${htmlKey}`, // quick link for archive viewer
-      },
+        access: "public",
+        contentType: "application/json; charset=utf-8",
+        addRandomSuffix: false,
+        token,
+      }
+    );
+
+    return NextResponse.json(
+      { ok: true, slug, htmlKey, jsonKey },
       { status: 200 }
     );
-  } catch (err) {
+  } catch (err: any) {
     return NextResponse.json(
-      { error: String(err || "Save failed") },
+      { error: String(err?.message || err || "Save failed") },
       { status: 500 }
     );
   }
