@@ -15,10 +15,10 @@ export async function POST(req: NextRequest) {
   let slug = "";
   try {
     const body = (await req.json().catch(() => ({}))) as SaveBody;
-    const rawHtml = (body.html ?? "").toString();
+    const html = (body.html ?? "").toString();
     slug = (body.slug ?? "").toString().trim();
 
-    if (!rawHtml || !slug) {
+    if (!html || !slug) {
       return NextResponse.json(
         { error: "Missing html or slug" },
         { status: 400 }
@@ -36,19 +36,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Rehost all remote images to our Blob bucket and rewrite <img src=...>
-    const rehostedHtml = await rehostRemoteImages(rawHtml, slug, token);
+    // --- 1. Rehost all images ---
+    const rewrittenHtml = await rehostImages(html, slug, token);
 
-    // 2) Write HTML (public, stable key)
+    // --- 2. Save HTML to Blob ---
     const htmlKey = `recipes/${slug}.html`;
-    const htmlBlob = await put(htmlKey, rehostedHtml, {
+    const htmlBlob = await put(htmlKey, rewrittenHtml, {
       token,
       access: "public",
       contentType: "text/html; charset=utf-8",
       addRandomSuffix: false,
     });
 
-    // 3) Optional JSON sidecar
+    // --- 3. Optionally save JSON sidecar ---
     let jsonKey: string | undefined;
     if (typeof body.json !== "undefined") {
       jsonKey = `recipes/${slug}.json`;
@@ -72,151 +72,69 @@ export async function POST(req: NextRequest) {
     );
   } catch (err: any) {
     return NextResponse.json(
-      {
-        ok: false,
-        slug,
-        error: typeof err?.message === "string" ? err.message : String(err),
-      },
+      { ok: false, slug, error: String(err?.message ?? err) },
       { status: 500 }
     );
   }
 }
 
-/**
- * Rehosts all remote <img> sources (including data-src/srcset/lazy variants) to Vercel Blob (public),
- * then rewrites HTML <img src="..."> to our blob URLs.
- */
-async function rehostRemoteImages(html: string, slug: string, token: string): Promise<string> {
-  let out = html;
+/* -------------------------------------------------- */
+/* Helper: fetch every <img>, upload to Blob, rewrite */
+/* -------------------------------------------------- */
+async function rehostImages(html: string, slug: string, token: string) {
+  const imgRegex = /<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
+  const matches = [...html.matchAll(imgRegex)];
 
-  // Collect all <img ...> tags
-  const tags = [...out.matchAll(/<img\b[^>]*>/gi)].map(m => m[0]);
-  if (!tags.length) return out;
+  let rewritten = html;
 
-  // Helper to extract one attribute value
-  function pickAttr(tag: string, re: RegExp): string {
-    const m = tag.match(new RegExp(`${re.source}\\s*=\\s*("([^"]+)"|'([^']+)'|([^\\s>]+))`, re.flags));
-    return (m?.[2] || m?.[3] || m?.[4] || "").trim();
+  for (const match of matches) {
+    const fullTag = match[0];
+    const src = match[1];
+
+    // Skip if already pointing to your Blob
+    if (src.includes(".blob.vercel-storage.com")) continue;
+
+    try {
+      // Fetch the remote image
+      const res = await fetch(src);
+      if (!res.ok || !res.body) continue;
+
+      const arrayBuffer = await res.arrayBuffer();
+      const ext = guessExtension(res.headers.get("content-type") || "");
+
+      // Construct a deterministic key
+      const fileKey = `recipes/${slug}/img-${hash(src)}${ext}`;
+      const blob = await put(fileKey, Buffer.from(arrayBuffer), {
+        token,
+        access: "public",
+        contentType: res.headers.get("content-type") || "image/jpeg",
+        addRandomSuffix: false,
+      });
+
+      // Replace src in HTML with Blob URL
+      const newTag = fullTag.replace(src, blob.url);
+      rewritten = rewritten.replace(fullTag, newTag);
+    } catch (err) {
+      console.error("⚠️ Failed to rehost image:", src, err);
+    }
   }
 
-  // Deduplicate work by original URL
-  const replacementMap = new Map<string, string>();
-
-  // Process each tag in parallel
-  await Promise.all(
-    tags.map(async (tag) => {
-      // Prefer data-src/data-original/data-lazy → src → first candidate in srcset
-      const dataSrc = pickAttr(tag, /data-(?:src|original|lazy)/i);
-      const srcAttr = pickAttr(tag, /src/i);
-      const srcset = pickAttr(tag, /srcset/i);
-
-      let url = dataSrc || srcAttr || "";
-      if (!url && srcset) {
-        const first = (srcset.split(",")[0] || "").trim().split(/\s+/)[0] || "";
-        url = first;
-      }
-
-      if (!url) return; // nothing to do
-
-      // Absolutize //host/path → https://host/path
-      if (url.startsWith("//")) url = "https:" + url;
-
-      // Skip non-absolute http(s) (data: URIs, relative /img.jpg, etc.)
-      if (!/^https?:\/\//i.test(url)) return;
-
-      // Already rehosted? skip fetch
-      if (replacementMap.has(url)) return;
-
-      try {
-        // Fetch the image server-side (no referrer here by default)
-        const res = await fetch(url, {
-          // Some hosts require UA
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            // Explicitly no Referer
-            "Referer": "",
-          },
-          // avoid caching oddities
-          cache: "no-store",
-          redirect: "follow",
-        });
-
-        if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
-
-        const arrayBuf = await res.arrayBuffer();
-        const type = res.headers.get("content-type") || "image/jpeg";
-        const ext = guessExt(type);
-
-        const key = `recipes/${slug}/assets/img-${hashOf(url)}${ext}`;
-        const blob = await put(key, Buffer.from(arrayBuf), {
-          token,
-          access: "public",
-          contentType: type,
-          addRandomSuffix: false,
-        });
-
-        replacementMap.set(url, blob.url);
-      } catch {
-        // If fetch or upload fails, leave it as-is (image may still work), no throw
-      }
-    })
-  );
-
-  if (!replacementMap.size) return out;
-
-  // Finally, rewrite HTML:
-  //  - normalize each <img> to a clean tag with our blob URL (if we fetched it)
-  out = out.replace(/<img\b[^>]*>/gi, (tag) => {
-    // Pick the effective source we used above:
-    const dataSrc = pickAttr(tag, /data-(?:src|original|lazy)/i);
-    const srcAttr = pickAttr(tag, /src/i);
-    const srcset = pickAttr(tag, /srcset/i);
-
-    let url = dataSrc || srcAttr || "";
-    if (!url && srcset) {
-      const first = (srcset.split(",")[0] || "").trim().split(/\s+/)[0] || "";
-      url = first;
-    }
-    if (url.startsWith("//")) url = "https:" + url;
-
-    const replaced = replacementMap.get(url);
-    const finalSrc = replaced || (/^https?:\/\//i.test(url) ? url : "https://picsum.photos/800/450");
-
-    return `<img src="${finalSrc}" referrerpolicy="no-referrer" crossorigin="anonymous" loading="eager" decoding="async">`;
-  });
-
-  // Also ensure the doc has a no-referrer meta (keeps consistent behavior)
-  const meta = `<meta name="referrer" content="no-referrer">`;
-  if (/<head[^>]*>/i.test(out)) {
-    if (!/name=["']referrer["']/i.test(out)) {
-      out = out.replace(/<head[^>]*>/i, (m) => `${m}\n${meta}`);
-    }
-  } else if (/<html[^>]*>/i.test(out)) {
-    out = out.replace(/<html[^>]*>/i, (m) => `${m}\n<head>\n${meta}\n</head>`);
-  } else {
-    out = `<head>\n${meta}\n</head>\n` + out;
-  }
-
-  return out;
+  return rewritten;
 }
 
-function guessExt(contentType: string): string {
-  const type = contentType.split(";")[0].trim().toLowerCase();
-  if (type === "image/jpeg" || type === "image/jpg") return ".jpg";
-  if (type === "image/png") return ".png";
-  if (type === "image/webp") return ".webp";
-  if (type === "image/gif") return ".gif";
-  if (type === "image/svg+xml") return ".svg";
-  return ".bin";
+/* Helpers */
+function guessExtension(contentType: string) {
+  if (contentType.includes("png")) return ".png";
+  if (contentType.includes("webp")) return ".webp";
+  if (contentType.includes("gif")) return ".gif";
+  return ".jpg";
 }
 
-// quick stable hash from a URL string (not crypto-strong, just to name files deterministically)
-function hashOf(s: string): string {
+function hash(input: string) {
   let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h * 31 + s.charCodeAt(i)) | 0;
+  for (let i = 0; i < input.length; i++) {
+    h = (h << 5) - h + input.charCodeAt(i);
+    h |= 0;
   }
-  return (h >>> 0).toString(36);
+  return Math.abs(h).toString(36);
 }
