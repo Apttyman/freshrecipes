@@ -1,69 +1,98 @@
 // app/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 export default function Home() {
-  const [prompt, setPrompt] = useState("Chicago hot dog");
-  const [generating, setGenerating] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [previewHtml, setPreviewHtml] = useState<string>("");
+  const [slug, setSlug] = useState<string>("");
+  const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [html, setHtml] = useState<string | null>(null);
-  const [slug, setSlug] = useState<string | null>(null);
-  const [savedLink, setSavedLink] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string>(""); // shows real error/success text
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   async function onGenerate() {
-    setGenerating(true);
-    setSaving(false);
-    setSavedLink(null);
-    setError(null);
-    setHtml(null);
-    setSlug(null);
+    setMsg("");
+    setPreviewHtml("");
+    setSlug("");
+    setBusy(true);
     try {
       const r = await fetch("/api/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
-      const data = await r.json();
+
+      // Try to parse JSON; fall back to text
+      let data: any = null;
+      try { data = await r.json(); } catch { /* fall through */ }
+
       if (!r.ok) {
-        setError(data?.error || `HTTP ${r.status}`);
+        const errText = (data && (data.error || data.message)) || `HTTP ${r.status}`;
+        setMsg(errText);                      // << show exact server error
         return;
       }
-      setHtml(data?.html || "");
-      setSlug(data?.slug || "");
+
+      const html = String(data?.html || "");
+      const slugValue = String(data?.slug || "");
+      if (!html) {
+        setMsg("Generator returned empty HTML.");
+        return;
+      }
+
+      setPreviewHtml(html);
+      setSlug(slugValue);
+
+      // Render inline preview
+      if (iframeRef.current) {
+        const doc = iframeRef.current.contentWindow?.document;
+        if (doc) {
+          doc.open();
+          doc.write(html);
+          doc.close();
+        }
+      }
     } catch (e: any) {
-      setError(String(e?.message || e || "Request failed"));
+      setMsg(String(e?.message || e || "Generate failed"));
     } finally {
-      setGenerating(false);
+      setBusy(false);
     }
   }
 
   async function onSave() {
-    if (!html?.trim()) return;
+    if (!previewHtml || !slug) {
+      setMsg("Nothing to save yet.");
+      return;
+    }
     setSaving(true);
-    setError(null);
-    setSavedLink(null);
+    setMsg("");
     try {
       const r = await fetch("/api/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ html, slug: slug || fallbackSlug(prompt) }),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ html: previewHtml, slug }),
       });
-      const data = await r.json().catch(() => ({}));
+
+      let data: any = null;
+      try { data = await r.json(); } catch { /* fall through */ }
+
       if (!r.ok) {
-        setError(data?.error || `Save failed: HTTP ${r.status}`);
+        const errText = (data && (data.error || data.message)) || `HTTP ${r.status}`;
+        setMsg(errText);
         return;
       }
-      const url: string | undefined = data?.urlHtml || data?.url || data?.href;
-      if (url) {
-        setSavedLink(url);
-        // Keep on page; user can tap saved link or Open Archive
-      } else {
-        setError("Save succeeded but no URL was returned by /api/save.");
+
+      const url = String(data?.url || "");
+      if (!url) {
+        setMsg("Save succeeded but no URL was returned by /api/save.");
+        return;
       }
+      setMsg(`Saved ✓  →  ${url}`);
+      // Optionally auto-open:
+      // window.location.href = url;
     } catch (e: any) {
-      setError(String(e?.message || e || "Save failed"));
+      setMsg(String(e?.message || e || "Save failed"));
     } finally {
       setSaving(false);
     }
@@ -71,83 +100,63 @@ export default function Home() {
 
   return (
     <main className="mx-auto max-w-3xl p-4 sm:p-8">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Fresh Recipes</h1>
+      <header className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold">Fresh Recipes</h1>
         <a
           href="/archive"
-          className="rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
+          className="inline-block rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
         >
           Open Archive
         </a>
-      </div>
+      </header>
 
-      <p className="text-slate-600 mb-6">
-        Paste a directive and generate a complete HTML page.
-      </p>
-
-      <div className="rounded-xl border p-4 mb-4">
-        <label className="block text-sm font-medium mb-2">
+      <section className="rounded-xl border p-4 sm:p-6">
+        <label className="block text-lg font-semibold mb-2">
           What should we fetch &amp; render?
         </label>
         <textarea
-          className="w-full rounded-lg border p-3 min-h-[96px] text-base"
+          className="w-full rounded-lg border p-3 font-medium outline-none"
+          rows={4}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="e.g., 3 iconic Peruvian chicken recipes"
+          placeholder='e.g. "3 iconic homemade ice cream recipes with cool photos"'
         />
 
-        <div className="mt-3 flex flex-wrap gap-3 relative z-10">
+        <div className="mt-4 flex gap-3">
           <button
-            type="button"
             onClick={onGenerate}
-            disabled={generating}
-            className="rounded-lg bg-blue-600 text-white px-4 py-2 disabled:opacity-60"
+            disabled={busy || !prompt.trim()}
+            className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white disabled:opacity-50"
           >
-            {generating ? "Generating…" : "Generate HTML"}
+            {busy ? "Generating…" : "Generate HTML"}
           </button>
 
           <button
-            type="button"
             onClick={onSave}
-            disabled={saving || !html?.trim()}
-            className="rounded-lg border px-4 py-2 disabled:opacity-60"
-            aria-disabled={saving || !html?.trim()}
+            disabled={!previewHtml || !slug || saving}
+            className="rounded-lg border px-4 py-2 font-semibold disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save to Archive"}
           </button>
         </div>
 
-        {error && (
-          <p className="mt-3 text-sm text-red-600">
-            {JSON.stringify({ error })}
+        {msg && (
+          <p className="mt-3 text-sm text-red-600 break-words">
+            {JSON.stringify({ error: msg })}
           </p>
         )}
+      </section>
 
-        {savedLink && (
-          <p className="mt-3 text-sm">
-            Saved:{" "}
-            <a href={savedLink} className="underline" target="_blank" rel="noreferrer">
-              {savedLink}
-            </a>
-          </p>
-        )}
-
-        {html && (
-          <section className="mt-4 relative">
-            {/* Preview under buttons; cannot intercept clicks */}
-            <iframe
-              title="preview"
-              className="mt-2 w-full h-[70vh] rounded-lg border block relative z-0"
-              srcDoc={html}
-              referrerPolicy="no-referrer"
-            />
-          </section>
-        )}
-      </div>
+      {previewHtml && (
+        <details className="mt-6 rounded-xl border">
+          <summary className="cursor-pointer p-3 font-semibold">
+            Preview (inline)
+          </summary>
+          <div className="p-3">
+            <iframe ref={iframeRef} className="w-full h-[70vh] rounded-lg border" />
+          </div>
+        </details>
+      )}
     </main>
   );
-}
-
-function fallbackSlug(s: string) {
-  return s.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 }
