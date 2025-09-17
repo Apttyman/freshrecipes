@@ -10,7 +10,6 @@ type Row = {
   urlJson: string | null;
 };
 
-// Fetch the index from your API (works in prod & preview)
 async function getIndex(): Promise<Row[]> {
   const base = process.env.NEXT_PUBLIC_BASE_URL ?? "";
   try {
@@ -30,15 +29,11 @@ async function getIndex(): Promise<Row[]> {
   }
 }
 
-// ----- Next 15: async params typing -----
 export async function generateMetadata(
   props: { params: Promise<{ slug: string }> }
 ): Promise<Metadata> {
   const { slug } = await props.params;
-  return {
-    title: `Recipe – ${slug}`,
-    description: `Recipe detail for ${slug}`,
-  };
+  return { title: `Recipe – ${slug}`, description: `Recipe detail for ${slug}` };
 }
 
 export default async function RecipePage(
@@ -53,13 +48,8 @@ export default async function RecipePage(
     return (
       <main className="mx-auto max-w-3xl p-8">
         <h1 className="text-2xl font-semibold">Recipe not found</h1>
-        <p className="mt-2 text-slate-600">
-          We couldn&apos;t locate a recipe for “{slug}”.
-        </p>
-        <a
-          href="/archive"
-          className="mt-6 inline-block rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
-        >
+        <p className="mt-2 text-slate-600">We couldn&apos;t locate a recipe for “{slug}”.</p>
+        <a href="/archive" className="mt-6 inline-block rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50">
           Go to Archive
         </a>
       </main>
@@ -69,9 +59,7 @@ export default async function RecipePage(
   return (
     <main className="mx-auto max-w-5xl p-4 sm:p-8">
       <header className="mb-6">
-        <h1 className="text-3xl font-bold tracking-tight">
-          {row.title ?? slug}
-        </h1>
+        <h1 className="text-3xl font-bold tracking-tight">{row.title ?? slug}</h1>
         <p className="mt-1 text-sm text-slate-500">
           Added {new Date(row.createdAt).toLocaleString()}
         </p>
@@ -94,10 +82,7 @@ export default async function RecipePage(
       </section>
 
       <footer className="mt-10">
-        <a
-          href="/archive"
-          className="inline-block rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
-        >
+        <a href="/archive" className="inline-block rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50">
           Back to Archive
         </a>
       </footer>
