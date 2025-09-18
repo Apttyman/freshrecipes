@@ -1,9 +1,7 @@
+// app/page.tsx
 "use client";
 
 import { useState } from "react";
-
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 type GenResult = { html?: string; error?: string; slug?: string };
 
@@ -26,7 +24,6 @@ export default function Home() {
         ?.split(";")[0]}\n`;
       const data = (await res.json()) as GenResult;
       setLog(txt + (data.error ? `ERR: ${data.error}` : `OK (${(data.html ?? "").length} bytes)`));
-
       if (data.error) {
         alert(data.error);
         return;
@@ -43,7 +40,6 @@ export default function Home() {
       alert("Nothing to save yet.");
       return;
     }
-    // naive title: first <h1> text or fallback
     const titleMatch = preview.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
     const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : "Recipe";
 
@@ -53,20 +49,15 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ html: preview, title }),
       });
-
       const data = await res.json();
       if (!res.ok) {
         alert(data?.error || "Save failed");
         return;
       }
-
-      // Expect `url` (server now guarantees this)
       if (data?.url) {
-        window.location.href = data.url; // navigate to archive page
+        window.location.href = data.url;
         return;
       }
-
-      // Fallbacks if user still has an old client/server mismatch
       if (data?.viewUrl) {
         window.location.href = data.viewUrl;
         return;
@@ -75,8 +66,6 @@ export default function Home() {
         window.location.href = `/archive/${encodeURIComponent(data.slug)}`;
         return;
       }
-
-      // If absolutely nothing usable, show a single alert (matches your prior UX)
       alert("Save succeeded but no URL was returned by /api/save.");
     } catch (e: any) {
       alert(`Save failed: ${String(e)}`);
@@ -160,7 +149,6 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Tiny log */}
         <pre
           style={{
             marginTop: 16,
@@ -176,7 +164,6 @@ export default function Home() {
         </pre>
       </section>
 
-      {/* Preview */}
       <details open style={{ marginTop: 24 }}>
         <summary style={{ fontWeight: 800, fontSize: 24 }}>Preview (inline)</summary>
         <div
@@ -187,7 +174,6 @@ export default function Home() {
             marginTop: 12,
             background: "#fff",
           }}
-          // we deliberately render raw HTML for preview
           dangerouslySetInnerHTML={{ __html: preview }}
         />
       </details>
