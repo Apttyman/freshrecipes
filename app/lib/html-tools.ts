@@ -1,6 +1,6 @@
 // app/lib/html-tools.ts
+// Clean helpers: no referrerpolicy/crossorigin injection anywhere.
 
-/** Keep the same slug logic everywhere (generate + save + viewer). */
 export function slugify(s: string) {
   return (s || "")
     .toLowerCase()
@@ -24,49 +24,27 @@ export function ensureAtLeastOneImage(html: string): string {
   return `${hero}\n${html}`;
 }
 
-/** Add page/meta no-referrer + apply per-img attributes. */
-export function addNoReferrer(html: string): string {
-  let out = html || "";
-
-  const meta = `<meta name="referrer" content="no-referrer">`;
-  if (/<head[^>]*>/i.test(out)) {
-    if (!/name=["']referrer["']/i.test(out)) {
-      out = out.replace(/<head[^>]*>/i, (m) => `${m}\n${meta}`);
-    }
-  } else if (/<html[^>]*>/i.test(out)) {
-    out = out.replace(/<html[^>]*>/i, (m) => `${m}\n<head>\n${meta}\n</head>`);
-  } else {
-    out = `<head>\n${meta}\n</head>\n` + out;
-  }
-
-  out = out.replace(/<img\b[^>]*>/gi, (tag) => {
-    let t = tag
-      .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
-      .replace(/\scrossorigin\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-    return t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
-  });
-
-  return out;
-}
-
-/** Rewrite all absolute <img src> to Cloudinary fetch URLs (no secret needed). */
+/** Re-host all absolute <img src> via Cloudinary fetch. No referrer/cors attrs added. */
 export function rewriteImagesWithCloudinary(html: string): string {
   const cloud = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || "";
   if (!cloud) return html;
 
-  return (html || "").replace(/<img\b[^>]*\bsrc=['"]([^'"]+)['"][^>]*>/gi, (tag, src) => {
-    if (!/^https?:\/\//i.test(src)) return tag; // skip relative/data src
-    const encoded = encodeURIComponent(src);
-    const fetchUrl =
-      `https://res.cloudinary.com/${cloud}/image/fetch/` +
-      `f_auto,q_auto,w_1600/${encoded}`;
+  return (html || "").replace(
+    /<img\b([^>]*?)\bsrc=['"]([^'"]+)['"]([^>]*)>/gi,
+    (_tag, preAttrs: string, src: string, postAttrs: string) => {
+      if (!/^https?:\/\//i.test(src)) {
+        // leave data:, blob:, relative src untouched
+        return `<img${preAttrs}src="${src}"${postAttrs}>`;
+      }
+      const encoded = encodeURIComponent(src);
+      const fetchUrl =
+        `https://res.cloudinary.com/${cloud}/image/fetch/` +
+        `f_auto,q_auto,w_1600/${encoded}`;
 
-    let t = tag
-      .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
-      .replace(/\scrossorigin\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-    t = t.replace(/src=['"][^'"]+['"]/, `src="${fetchUrl}"`);
-    return t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
-  });
+      // Keep all original attributes, just swap src
+      return `<img${preAttrs}src="${fetchUrl}"${postAttrs}>`;
+    }
+  );
 }
 
 /** Strip code fences / JSON wrappers the model sometimes returns. */
