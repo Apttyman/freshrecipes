@@ -1,200 +1,196 @@
-// app/page.tsx
 "use client";
 
 import { useState } from "react";
 
-type GenPayload = { html?: string; slug?: string; error?: string };
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-export default function HomePage() {
-  const [prompt, setPrompt] = useState("");
-  const [html, setHtml] = useState("");
-  const [slug, setSlug] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+type GenResult = { html?: string; error?: string; slug?: string };
+
+export default function Home() {
+  const [query, setQuery] = useState("");
+  const [preview, setPreview] = useState("");
   const [log, setLog] = useState<string>("");
 
-  const appendLog = (line: string) =>
-    setLog((prev) => (prev ? prev + "\n" + line : line));
-
-  async function handleGenerate() {
-    if (!prompt.trim() || loading) return;
-    setLoading(true);
-    setHtml("");
-    setSlug("");
+  async function generate() {
     setLog("");
+    setPreview("");
     try {
-      appendLog("POST /api/generate …");
-      const r = await fetch("/api/generate", {
+      const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt: query }),
       });
-      appendLog(`status ${r.status} ${r.statusText} | ${r.headers.get("content-type")}`);
-      const data = (await r.json()) as GenPayload;
-      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      appendLog(`OK (${(JSON.stringify(data).length).toLocaleString()} bytes)`);
-      setHtml(data.html ?? "");
-      setSlug(data.slug ?? "");
-    } catch (err: any) {
-      const msg = String(err?.message || err);
-      setHtml("");
-      setSlug("");
-      appendLog(`ERROR: ${msg}`);
-      alert(`Generate failed: ${msg}`);
-    } finally {
-      setLoading(false);
+      const txt = `POST /api/generate …\nstatus ${res.status}  |  ${res.headers
+        .get("content-type")
+        ?.split(";")[0]}\n`;
+      const data = (await res.json()) as GenResult;
+      setLog(txt + (data.error ? `ERR: ${data.error}` : `OK (${(data.html ?? "").length} bytes)`));
+
+      if (data.error) {
+        alert(data.error);
+        return;
+      }
+      setPreview(data.html ?? "");
+    } catch (e: any) {
+      setLog(`Generate failed: ${String(e)}`);
+      alert(`Generate failed: ${String(e)}`);
     }
   }
 
-  async function handleSave() {
-    if (!html || saving) return;
-    setSaving(true);
-    appendLog("POST /api/save …");
+  async function saveToArchive() {
+    if (!preview) {
+      alert("Nothing to save yet.");
+      return;
+    }
+    // naive title: first <h1> text or fallback
+    const titleMatch = preview.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : "Recipe";
+
     try {
-      const r = await fetch("/api/save", {
+      const res = await fetch("/api/save", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ html, slug }),
+        body: JSON.stringify({ html: preview, title }),
       });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
-      const url = data?.url || data?.pageUrl || "";
-      appendLog(`Saved. URL: ${url || "(no url returned)"}`);
-      if (url) {
-        // open in new tab
-        window.open(url, "_blank", "noopener,noreferrer");
-      } else {
-        alert('Save succeeded but no URL was returned by /api/save.');
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data?.error || "Save failed");
+        return;
       }
-    } catch (err: any) {
-      const msg = String(err?.message || err);
-      appendLog(`SAVE ERROR: ${msg}`);
-      alert(`Save failed: ${msg}`);
-    } finally {
-      setSaving(false);
+
+      // Expect `url` (server now guarantees this)
+      if (data?.url) {
+        window.location.href = data.url; // navigate to archive page
+        return;
+      }
+
+      // Fallbacks if user still has an old client/server mismatch
+      if (data?.viewUrl) {
+        window.location.href = data.viewUrl;
+        return;
+      }
+      if (data?.slug) {
+        window.location.href = `/archive/${encodeURIComponent(data.slug)}`;
+        return;
+      }
+
+      // If absolutely nothing usable, show a single alert (matches your prior UX)
+      alert("Save succeeded but no URL was returned by /api/save.");
+    } catch (e: any) {
+      alert(`Save failed: ${String(e)}`);
     }
   }
 
   return (
-    <main style={{ maxWidth: 900, margin: "24px auto", padding: "0 16px" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+    <main className="container" style={{ maxWidth: 860, margin: "24px auto", padding: 16 }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ fontSize: 40, lineHeight: 1.1, margin: 0 }}>Fresh Recipes</h1>
-        <button
-          type="button"
-          onClick={() => (window.location.href = "/archive")}
-          style={btnOutline}
+        <a
+          href="/archive"
+          style={{
+            textDecoration: "none",
+            border: "1px solid #ddd",
+            padding: "12px 16px",
+            borderRadius: 12,
+            fontWeight: 600,
+          }}
         >
           Open Archive
-        </button>
+        </a>
       </header>
 
-      <section style={card}>
-        <label style={{ display: "block", fontWeight: 700, marginBottom: 8 }}>
-          What should we fetch &amp; render?
+      <section
+        style={{
+          marginTop: 24,
+          padding: 16,
+          border: "1px solid #e5e5e5",
+          borderRadius: 16,
+          background: "#fff",
+        }}
+      >
+        <label style={{ fontWeight: 700, fontSize: 22, display: "block", marginBottom: 8 }}>
+          What should we fetch & render?
         </label>
         <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
           rows={4}
-          placeholder="e.g. 3 iconic Peruvian chicken recipes with step photos"
-          style={textarea}
+          placeholder="e.g. 3 iconic Peruvian chicken recipes with photos"
+          style={{
+            width: "100%",
+            padding: 12,
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            fontSize: 18,
+          }}
         />
-
         <div style={{ display: "flex", gap: 16, marginTop: 16 }}>
           <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={loading || !prompt.trim()}
-            style={{ ...btnPrimary, opacity: loading || !prompt.trim() ? 0.6 : 1 }}
+            onClick={generate}
+            style={{
+              background: "#2563eb",
+              color: "#fff",
+              border: "none",
+              padding: "14px 18px",
+              borderRadius: 14,
+              fontSize: 20,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
           >
-            {loading ? "Generating…" : "Generate HTML"}
+            Generate HTML
           </button>
-
           <button
-            type="button"
-            onClick={handleSave}
-            disabled={!html || saving}
-            style={{ ...btnOutline, opacity: !html || saving ? 0.6 : 1 }}
+            onClick={saveToArchive}
+            disabled={!preview}
+            style={{
+              opacity: preview ? 1 : 0.5,
+              background: "#f3f4f6",
+              border: "1px solid #e5e7eb",
+              padding: "14px 18px",
+              borderRadius: 14,
+              fontSize: 20,
+              fontWeight: 700,
+              cursor: preview ? "pointer" : "default",
+            }}
           >
-            {saving ? "Saving…" : "Save to Archive"}
+            Save to Archive
           </button>
         </div>
 
-        {/* Inline console */}
+        {/* Tiny log */}
         <pre
           style={{
-            marginTop: 12,
-            background: "#111",
-            color: "#eee",
-            fontSize: 12,
-            padding: 12,
-            borderRadius: 8,
-            maxHeight: 180,
-            overflow: "auto",
+            marginTop: 16,
             whiteSpace: "pre-wrap",
+            background: "#0b0b0b",
+            color: "#e5e7eb",
+            padding: 12,
+            borderRadius: 12,
+            fontSize: 14,
           }}
         >
-          {log || "—"}
+          {log}
         </pre>
       </section>
 
-      <details open style={{ marginTop: 16 }}>
-        <summary style={{ fontWeight: 800, fontSize: 20 }}>Preview (inline)</summary>
-        <div style={{ border: "1px solid #ddd", borderRadius: 12, marginTop: 8, padding: 12 }}>
-          {html ? (
-            <iframe
-              title="preview"
-              srcDoc={html}
-              style={{ width: "100%", height: 900, border: "0", borderRadius: 8, background: "#fff" }}
-              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-            />
-          ) : (
-            <div style={{ color: "#999", fontStyle: "italic", padding: "24px 0" }}>
-              (Nothing yet — click “Generate HTML”)
-            </div>
-          )}
-        </div>
+      {/* Preview */}
+      <details open style={{ marginTop: 24 }}>
+        <summary style={{ fontWeight: 800, fontSize: 24 }}>Preview (inline)</summary>
+        <div
+          style={{
+            border: "1px solid #eee",
+            borderRadius: 16,
+            padding: 12,
+            marginTop: 12,
+            background: "#fff",
+          }}
+          // we deliberately render raw HTML for preview
+          dangerouslySetInnerHTML={{ __html: preview }}
+        />
       </details>
     </main>
   );
 }
-
-/* -------------------------- tiny inline styles -------------------------- */
-
-const card: React.CSSProperties = {
-  border: "1px solid #e5e7eb",
-  borderRadius: 12,
-  padding: 16,
-  background: "#fff",
-};
-
-const textarea: React.CSSProperties = {
-  width: "100%",
-  borderRadius: 10,
-  border: "1px solid #d1d5db",
-  padding: 12,
-  fontSize: 16,
-  lineHeight: 1.4,
-  outline: "none",
-};
-
-const btnBase: React.CSSProperties = {
-  borderRadius: 12,
-  padding: "14px 18px",
-  fontWeight: 700,
-  cursor: "pointer",
-  border: "1px solid transparent",
-};
-
-const btnPrimary: React.CSSProperties = {
-  ...btnBase,
-  background: "#2563eb",
-  color: "white",
-};
-
-const btnOutline: React.CSSProperties = {
-  ...btnBase,
-  background: "white",
-  color: "#111",
-  border: "1px solid #e5e7eb",
-};
