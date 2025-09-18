@@ -1,377 +1,370 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { rewriteImages } from "@/app/lib/html-tools";
+import { rewriteImages, normalizeModelHtml } from "@/app/lib/html-tools";
 
-type GenResult = { html?: string; slug?: string; error?: string; detail?: string };
+// Types for API responses
+type GenOk = {
+  ok: true;
+  id: string; // id for this generation (used when saving)
+  title?: string;
+  html: string; // full HTML returned by /api/generate
+};
 
-export default function HomePage() {
-  const [prompt, setPrompt] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [resultHtml, setResultHtml] = useState<string>("");
-  const [log, setLog] = useState("");
-  const [toast, setToast] = useState("");
+type GenErr = { ok: false; error: string };
 
-  function appendLog(line: string) {
-    setLog((s) => (s ? `${s}\n${line}` : line));
+type RecipeCard = {
+  id: string;
+  title: string;
+  author?: string;
+  html: string; // inner HTML of the card
+};
+
+// Small UI atoms
+const Button: React.FC<
+  React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" }
+> = ({ variant = "primary", className = "", children, ...props }) => {
+  const base =
+    "rounded-xl border text-sm font-semibold px-5 h-11 inline-flex items-center gap-2 transition";
+  const styles =
+    variant === "primary"
+      ? "bg-white border-slate-200 shadow-sm hover:bg-slate-50 active:bg-slate-100"
+      : "bg-transparent border-slate-300 hover:bg-slate-100";
+  return (
+    <button {...props} className={`${base} ${styles} ${className}`.trim()}>
+      {children}
+    </button>
+  );
+};
+
+const Card: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
+  className = "",
+  children,
+  ...props
+}) => (
+  <div
+    {...props}
+    className={`rounded-2xl border border-slate-200 shadow-sm bg-white ${className}`.trim()}
+  >
+    {children}
+  </div>
+);
+
+// ------- helpers to split model HTML into recipe cards -----------------
+
+/**
+ * Given the model's full HTML, split into logical recipe "cards".
+ * This is purely DOM-based so we avoid brittle regex.
+ */
+function extractRecipeCards(fullHtml: string): RecipeCard[] {
+  const html = rewriteImages(fullHtml); // also normalizes markdown fences
+  const doc = new DOMParser().parseFromString(html, "text/html");
+
+  // Strategy:
+  // - A recipe begins at each H2 (or H1 if present).
+  // - A "card" includes that heading plus content until the next H2.
+  // - If there are no H2s, one big card using H1 title or first heading.
+  const headings = doc.querySelectorAll("h2, h1");
+  const body = doc.body;
+
+  const cards: RecipeCard[] = [];
+
+  if (headings.length === 0) {
+    // Single card fallback
+    const title =
+      body.querySelector("h1,h2,h3")?.textContent?.trim() || "Recipe";
+    cards.push({
+      id: "recipe-0",
+      title,
+      html: body.innerHTML,
+    });
+    return cards;
   }
-  function showToast(msg: string) {
-    setToast(msg);
-    window.setTimeout(() => setToast(""), 1400);
-  }
 
-  async function handleGenerate() {
-    setLoading(true);
-    setResultHtml("");
-    setLog("");
+  headings.forEach((h, index) => {
+    const title = h.textContent?.trim() || `Recipe ${index + 1}`;
+    const art = doc.createElement("article");
+
+    // Move this heading into the article (clone to preserve original until we relocate)
+    art.appendChild(h.cloneNode(true));
+
+    // Gather all following siblings until the next H2/H1
+    const bodyDiv = doc.createElement("div");
+    let node: ChildNode | null = h;
+
+    // ---- FIX: rename `next` -> `nextNode` and give explicit type ----
+    while (node) {
+      const nextNode: ChildNode | null = node.nextSibling;
+      if (node !== h) {
+        bodyDiv.appendChild(node.cloneNode(true));
+      }
+      if (nextNode && (nextNode as Element).matches?.("h1,h2")) break;
+      node = nextNode;
+    }
+
+    art.appendChild(bodyDiv);
+
+    cards.push({
+      id: `recipe-${index}`,
+      title,
+      html: art.innerHTML,
+    });
+  });
+
+  // De-dup cards if DOM quirks created overlaps
+  return cards.filter((c, i, arr) => arr.findIndex((x) => x.html === c.html) === i);
+}
+
+// ----------------- Main Page ------------------------------------------
+
+export default function Page() {
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [log, setLog] = useState<string[]>([]);
+  const [gen, setGen] = useState<GenOk | null>(null);
+
+  const reqIdRef = useRef(0);
+
+  const appendLog = useCallback((line: string) => {
+    setLog((prev) => [...prev, line]);
+  }, []);
+
+  const onGenerate = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setGen(null);
+    const id = ++reqIdRef.current;
 
     try {
-      const url = `${window.location.origin}/api/generate?_=${Date.now()}`;
+      const url = `/api/generate?_=${Date.now()}`;
       appendLog(`→ POST ${url}`);
-
       const res = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query: prompt, prompt }), // server accepts either key
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
       });
 
       const text = await res.text();
-      if (!res.ok) {
-        appendLog(`✖ ${res.status} ${res.statusText}\n${text || "(no body)"}`);
-        throw new Error(res.statusText);
+      let data: GenOk | GenErr;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { ok: false, error: text || "Malformed response" };
       }
 
-      const data: GenResult = text ? JSON.parse(text) : {};
-      const raw = data.html || "";
-      // Normalize + basic image fixes (no prompt changes)
-      const normalized = rewriteImages(raw);
-      const pretty = toRecipeCards(normalized);
-      setResultHtml(pretty);
-      appendLog("✓ Done");
+      if (!res.ok || (data as GenErr).error) {
+        const err = (data as GenErr).error || `HTTP ${res.status}`;
+        appendLog(`✖ ${res.status} ${err}`);
+        setError(err);
+        setBusy(false);
+        return;
+      }
+
+      const ok = data as GenOk;
+      // Normalize HTML once here so downstream is consistent
+      const normalized = normalizeModelHtml(ok.html);
+      setGen({ ...ok, html: normalized });
+      appendLog(`✓ Response ${res.status}`);
     } catch (e: any) {
-      appendLog(`✖ Error: ${e?.message || String(e)}`);
+      const msg = e?.message || "Load failed";
+      appendLog(`✖ Error: ${msg}`);
+      setError(msg);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
-  }
+  }, [appendLog, query]);
 
-  // ---------- SAVE HELPERS ----------
-  async function saveWhole() {
-    if (!resultHtml) return;
-    const description = prompt.trim().slice(0, 200) || "Generated recipes";
+  const cards = useMemo<RecipeCard[]>(() => {
+    if (!gen?.html) return [];
+    return extractRecipeCards(gen.html);
+  }, [gen]);
 
-    appendLog("→ Save all to archive");
-    const r = await fetch("/api/archive/save", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        kind: "full",
-        title: makeWholeTitle(resultHtml) ?? "Saved Recipes",
-        description,
-        html: resultHtml,
-      }),
-    });
-
-    const body = await r.text();
-    if (!r.ok) {
-      appendLog(`✖ Save failed ${r.status}\n${body || "(no body)"}`);
-      showToast("Save failed");
-      return;
+  const saveAllToArchive = useCallback(async () => {
+    if (!gen) return;
+    try {
+      const res = await fetch("/api/archive/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          html: gen.html,
+          title: gen.title || query || "FreshRecipes Result",
+          kind: "full",
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      appendLog("✓ Saved whole result to archive");
+      alert("Saved whole result to archive.");
+    } catch (e: any) {
+      appendLog(`✖ Save failed: ${e?.message || e}`);
+      alert("Save failed.");
     }
-    const { id } = JSON.parse(body) as { id: string };
-    appendLog(`✓ Saved as ${id}`);
-    showToast("Saved");
-    window.open(`/r/${id}`, "_blank", "noopener,noreferrer");
-  }
+  }, [appendLog, gen, query]);
 
-  async function saveCard(article: HTMLElement) {
-    const title =
-      article.querySelector("h1,h2,h3,h4")?.textContent?.trim() ||
-      "Recipe Highlight";
-    const html = article.outerHTML;
-
-    appendLog(`→ Save highlight: ${title}`);
-    const r = await fetch("/api/archive/save", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        kind: "highlight",
-        title,
-        description: title,
-        html,
-      }),
-    });
-
-    const body = await r.text();
-    if (!r.ok) {
-      appendLog(`✖ Save highlight failed ${r.status}\n${body || "(no body)"}`);
-      showToast("Save failed");
-      return;
-    }
-    const { id } = JSON.parse(body) as { id: string };
-    appendLog(`✓ Highlight saved as ${id}`);
-    showToast("Saved");
-    window.open(`/r/${id}`, "_blank", "noopener,noreferrer");
-  }
-
-  // One Save button per RECIPE (per <article>)
-  function onSaveHighlightClick(e: Event) {
-    const btn = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>(
-      "[data-save-highlight]"
-    );
-    if (!btn) return;
-    e.preventDefault();
-    const card = btn.closest<HTMLElement>("article.recipe-card");
-    if (!card) return;
-    void saveCard(card);
-  }
-
-  function copyAll() {
-    const el = document.querySelector("#recipe-html");
-    if (!el) return;
-    const text = el.textContent?.trim() ?? "";
-    if (!text) return;
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(() => showToast("Copied"));
-    } else {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      showToast("Copied");
-    }
-  }
-
-  useEffect(() => {
-    function handler(ev: Event) {
-      if ((ev.target as HTMLElement | null)?.closest("[data-save-highlight]")) {
-        onSaveHighlightClick(ev);
+  const saveHighlight = useCallback(
+    async (card: RecipeCard) => {
+      try {
+        const res = await fetch("/api/archive/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            html: card.html,
+            title: card.title,
+            kind: "highlight",
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        appendLog(`✓ Saved highlight: ${card.title}`);
+        alert(`Saved highlight: ${card.title}`);
+      } catch (e: any) {
+        appendLog(`✖ Save highlight failed: ${e?.message || e}`);
+        alert("Save highlight failed.");
       }
-    }
-    document.addEventListener("click", handler);
-    return () => document.removeEventListener("click", handler);
-  }, []);
+    },
+    [appendLog, query]
+  );
 
   return (
-    <div className="container">
-      <header className="py-8">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <h1 className="text-3xl font-semibold">FreshRecipes</h1>
-            <p className="text-slate-600">
-              Type a natural-language request. We’ll fetch and format it.
-            </p>
-          </div>
-          <Link href="/archive" className="btn">
-            Open Archive
-          </Link>
-        </div>
+    <main className="mx-auto max-w-3xl px-4 py-12">
+      <header className="mb-8">
+        <h1 className="text-4xl font-extrabold tracking-tight text-slate-900">
+          FreshRecipes
+        </h1>
+        <p className="mt-2 text-slate-600">
+          Type a natural-language request. We’ll fetch and format it.
+        </p>
       </header>
 
-      <div className="max-w-3xl mx-auto space-y-6">
-        <div className="space-y-2">
-          <textarea
-            aria-label="Recipe request"
-            className="w-full rounded-lg border p-4 min-h-[140px]"
-            placeholder="e.g., 3 Peruvian chicken recipes from named chefs; include ingredients and steps"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-          />
-          <div className="flex gap-2 flex-wrap">
-            <button
-              className="btn"
-              onClick={handleGenerate}
-              disabled={loading || !prompt.trim()}
-            >
-              {loading ? "Generating…" : "Generate"}
-            </button>
-            {resultHtml ? (
-              <>
-                <button className="btn" onClick={copyAll} aria-label="Copy all">
-                  Copy all
-                </button>
-                <button
-                  className="btn"
-                  onClick={saveWhole}
-                  aria-label="Save all to archive"
-                >
-                  Save all to archive
-                </button>
-              </>
-            ) : null}
-          </div>
-        </div>
-
-        {resultHtml ? (
-          <section aria-labelledby="preview" className="card p-4">
-            <h2 id="preview" className="text-xl font-semibold mb-2">
-              Preview
-            </h2>
-            <div
-              id="recipe-html"
-              className="recipe-surface"
-              dangerouslySetInnerHTML={{ __html: resultHtml }}
-            />
-          </section>
-        ) : null}
-
-        <details className="card p-4">
-          <summary className="font-semibold cursor-pointer">Request log</summary>
-          <pre className="text-sm whitespace-pre-wrap mt-2">{log}</pre>
-        </details>
+      <div className="flex gap-3 mb-4">
+        <Link href="/archive" className="no-underline">
+          <Button variant="primary">Open Archive</Button>
+        </Link>
       </div>
 
-      <button
-        aria-label="Back to top"
-        className="fixed right-4 bottom-4 btn"
-        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      <Card className="p-4 mb-4">
+        <label className="block text-base font-semibold text-slate-800 mb-2">
+          Your request
+        </label>
+        <textarea
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="e.g., 3 chicken recipes by famous chefs"
+          rows={4}
+          className="w-full rounded-xl border border-slate-300 p-3 outline-none focus:ring-2 focus:ring-slate-300"
+        />
+        <div className="flex items-center gap-3 mt-4">
+          <Button onClick={onGenerate} disabled={busy || !query.trim()}>
+            {busy ? "Generating…" : "Generate"}
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              if (!gen?.html) return;
+              navigator.clipboard.writeText(gen.html);
+              appendLog("✓ Copied full HTML to clipboard");
+            }}
+            disabled={!gen?.html}
+          >
+            Copy all
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={saveAllToArchive}
+            disabled={!gen?.html}
+          >
+            Save all to archive
+          </Button>
+        </div>
+      </Card>
+
+      {/* Inline Preview */}
+      <section className="mb-10">
+        <h2 className="text-2xl font-bold text-slate-900 mb-3">Preview</h2>
+
+        {error && (
+          <Card className="p-4 mb-4 border-red-200">
+            <p className="text-red-600 font-semibold">Error</p>
+            <p className="text-sm text-red-700">{error}</p>
+          </Card>
+        )}
+
+        {!error && !gen && (
+          <p className="text-slate-500">No result yet. Try generating above.</p>
+        )}
+
+        {!error && gen && cards.length === 0 && (
+          <Card className="p-6">
+            <p className="text-slate-600">
+              No recipe sections detected. Showing raw output:
+            </p>
+            <div
+              className="prose prose-slate mt-4"
+              dangerouslySetInnerHTML={{ __html: gen.html }}
+            />
+          </Card>
+        )}
+
+        {!error && cards.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {cards.map((card) => (
+              <Card key={card.id} className="overflow-hidden">
+                <div className="p-5">
+                  <h3 className="text-xl font-bold leading-tight mb-2">
+                    {card.title}
+                  </h3>
+                  <div
+                    className="prose prose-slate max-w-none [&_.recipe-cover]:w-full [&_.recipe-cover]:rounded-xl [&_.recipe-cover]:mb-4"
+                    dangerouslySetInnerHTML={{ __html: card.html }}
+                  />
+                </div>
+                <div className="border-t border-slate-200 p-4">
+                  <Button
+                    variant="primary"
+                    onClick={() => saveHighlight(card)}
+                    className="w-full justify-center"
+                  >
+                    {/* inline svg bookmark */}
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      className="h-5 w-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                    >
+                      <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" />
+                    </svg>
+                    Save highlight
+                  </Button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Request Log */}
+      <section className="mb-20">
+        <Card className="p-4">
+          <details open>
+            <summary className="font-semibold">Request log</summary>
+            <pre className="mt-3 whitespace-pre-wrap text-sm text-slate-700">
+              {log.map((l, i) => (i ? "\n" : "") + l)}
+            </pre>
+          </details>
+        </Card>
+      </section>
+
+      {/* Back to top */}
+      <a
+        href="#"
+        className="fixed bottom-5 right-5 rounded-full shadow-md bg-white border border-slate-200 px-4 py-2 text-sm font-semibold"
       >
         ↑ Top
-      </button>
-
-      <div
-        role="status"
-        aria-atomic="true"
-        aria-live="polite"
-        className={`toast ${toast ? "show" : ""}`}
-      >
-        {toast}
-      </div>
-    </div>
+      </a>
+    </main>
   );
-}
-
-/* ----------- VISUAL WRAPPER (one Save per recipe) ----------- */
-
-function makeWholeTitle(html: string): string | null {
-  const m =
-    html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) ||
-    html.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
-  return m ? stripTags(m[1]).slice(0, 120) : null;
-}
-function stripTags(s: string) {
-  const div = document.createElement("div");
-  div.innerHTML = s;
-  return div.textContent || div.innerText || s;
-}
-
-/**
- * Build proper recipe cards:
- * - If <article> already exists → wrap with required classes & add exactly one Save button per article.
- * - Else → start a new card at each H2; collect all siblings until the next H2.
- * - Never drop content. Images get classes from rewriteImages().
- */
-function toRecipeCards(html: string): string {
-  try {
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    const body = doc.body;
-
-    const addSaveButton = (root: Element) => {
-      if (root.querySelector("[data-save-highlight]")) return;
-      const toolbar = doc.createElement("div");
-      toolbar.className = "btns";
-      toolbar.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;margin-top:8px";
-      toolbar.innerHTML = `
-        <button class="btn" data-save-highlight aria-label="Save this recipe highlight">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M6 4h12a2 2 0 0 1 2 2v13l-8-4-8 4V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="2" fill="none"/>
-          </svg>
-          Save highlight
-        </button>`;
-      root.appendChild(toolbar);
-    };
-
-    // If author already returned <article> cards, respect them.
-    const existing = body.querySelectorAll("article");
-    if (existing.length) {
-      existing.forEach((a) => {
-        a.classList.add("recipe-card");
-        if (!a.querySelector(".recipe-body")) {
-          const inner = doc.createElement("div");
-          inner.className = "recipe-body";
-          // move children into body
-          while (a.firstChild) inner.appendChild(a.firstChild);
-          a.appendChild(inner);
-        }
-        addSaveButton(a);
-      });
-
-      // Wrap in grid if not already
-      if (!body.querySelector(".recipe-grid")) {
-        const grid = doc.createElement("div");
-        grid.className = "recipe-grid";
-        existing.forEach((a) => grid.appendChild(a));
-        body.innerHTML = "";
-        // Keep an optional h1 above the grid
-        const h1 = doc.querySelector("h1");
-        const page = doc.createElement("div");
-        page.className = "recipe-page";
-        if (h1) {
-          page.appendChild(h1);
-        }
-        page.appendChild(grid);
-        body.appendChild(page);
-      }
-      return body.innerHTML;
-    }
-
-    // Otherwise, carve the body into cards by H2 boundaries
-    const h2s = Array.from(body.querySelectorAll("h2"));
-    if (h2s.length) {
-      const page = doc.createElement("div");
-      page.className = "recipe-page";
-      const title = body.querySelector("h1");
-      if (title) page.appendChild(title);
-
-      const grid = doc.createElement("div");
-      grid.className = "recipe-grid";
-
-      h2s.forEach((h, i) => {
-        const card = doc.createElement("article");
-        card.className = "recipe-card";
-        const bodyDiv = doc.createElement("div");
-        bodyDiv.className = "recipe-body";
-
-        // collect nodes from this H2 inclusive up to but NOT including the next H2
-        let node: ChildNode | null = h;
-        while (node) {
-          const next = node.nextSibling;
-          bodyDiv.appendChild(node);
-          if (next && (next as Element).matches?.("h2")) break;
-          node = next;
-        }
-        card.appendChild(bodyDiv);
-        addSaveButton(card);
-        grid.appendChild(card);
-      });
-
-      page.appendChild(grid);
-      body.innerHTML = "";
-      body.appendChild(page);
-      return body.innerHTML;
-    }
-
-    // Fallback: single card with everything
-    const card = doc.createElement("article");
-    card.className = "recipe-card";
-    const inner = doc.createElement("div");
-    inner.className = "recipe-body";
-    while (body.firstChild) inner.appendChild(body.firstChild);
-    card.appendChild(inner);
-    addSaveButton(card);
-    body.appendChild(card);
-    return body.innerHTML;
-  } catch {
-    // worst-case fallback: just wrap raw HTML once and add one Save
-    return `<div class="recipe-page"><div class="recipe-grid">
-      <article class="recipe-card"><div class="recipe-body">${html}</div>
-        <div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-          <button class="btn" data-save-highlight aria-label="Save this recipe highlight">Save highlight</button>
-        </div>
-      </article>
-    </div></div>`;
-  }
 }
