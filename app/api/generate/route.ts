@@ -1,75 +1,100 @@
 // app/api/generate/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
 import OpenAI from "openai";
-import {
-  toPureHtml,
-  ensureAtLeastOneImage,
-  rewriteImagesWithCloudinaryFetch,
-  stripNoReferrer,
-  slugify,
-} from "../../lib/html-tools"; // ← relative path
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { rewriteImagesToCloudinaryFetch } from "@/app/lib/html-tools";
 
-export const dynamic = "force-dynamic";
+// Use Node runtime so we can read the prompt file.
 export const runtime = "nodejs";
+// This endpoint is dynamic; never prerender.
+export const dynamic = "force-dynamic";
 
-const MODEL = "gpt-4o-mini";
+type GenRequest = {
+  query?: string; // freeform user directive typed in the box
+};
 
-async function loadSystemPrompt() {
-  const p = resolve(process.cwd(), "app/prompt/system-prompt.txt");
-  return await readFile(p, "utf8");
+function fail(status: number, message: string) {
+  return NextResponse.json({ error: message }, { status });
 }
 
-export async function POST(req: NextRequest) {
+async function readSystemPrompt(): Promise<string> {
+  // Path: app/prompt/system-prompt.txt (relative to project root)
+  const filePath = path.join(process.cwd(), "app", "prompt", "system-prompt.txt");
+  const buf = await fs.readFile(filePath);
+  return buf.toString("utf8").trim();
+}
+
+export async function POST(req: Request) {
+  let body: GenRequest;
   try {
-    let promptFromBody: string | undefined;
-    try {
-      const body = (await req.json()) as any;
-      promptFromBody = body?.prompt ?? body?.query ?? body?.text;
-    } catch {}
-    const promptFromQuery = req.nextUrl.searchParams.get("q") ?? undefined;
+    body = await req.json();
+  } catch {
+    return fail(400, "Invalid JSON");
+  }
 
-    const userPrompt = (promptFromBody ?? promptFromQuery ?? "").trim();
-    if (!userPrompt) {
-      return NextResponse.json(
-        { error: "Missing prompt", html: "", slug: "" },
-        { status: 400 }
-      );
-    }
+  const directive = (body.query ?? "").trim();
+  if (!directive) {
+    return fail(400, "Missing 'query' in request body");
+  }
 
-    if (!process.env.OPENAI_API_KEY) {
-      const msg =
-        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
-      return NextResponse.json({ html: msg, slug: slugify(userPrompt) }, { status: 200 });
-    }
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.OPENAI_APIKEY;
+  if (!OPENAI_API_KEY) {
+    return fail(500, "OPENAI_API_KEY is not configured");
+  }
 
-    const [systemPrompt] = await Promise.all([loadSystemPrompt()]);
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // 1) Load your system prompt file verbatim
+  let systemPrompt: string;
+  try {
+    systemPrompt = await readSystemPrompt();
+  } catch (err: any) {
+    return fail(500, `Failed to read system-prompt.txt: ${err?.message || err}`);
+  }
 
-    const messages = [
-      { role: "system" as const, content: systemPrompt },
-      { role: "user" as const, content: userPrompt },
-    ];
+  // 2) Ask the model to produce the COMPLETE HTML per your system prompt
+  const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-    const { choices } = await client.chat.completions.create({
-      model: MODEL,
+  let htmlRaw = "";
+  try {
+    // Use the Responses API if available in your project; otherwise Chat Completions also works.
+    const resp = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
       temperature: 0.6,
-      messages,
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: directive,
+        },
+      ],
     });
 
-    const raw = (choices[0]?.message?.content ?? "").trim();
-
-    const pure = toPureHtml(raw);
-    const withImage = ensureAtLeastOneImage(pure);
-    const noRef = stripNoReferrer(withImage);
-    const html = rewriteImagesWithCloudinaryFetch(noRef);
-
-    return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
+    htmlRaw = resp.choices?.[0]?.message?.content ?? "";
+    if (!htmlRaw) throw new Error("Model returned empty content");
   } catch (err: any) {
-    return NextResponse.json(
-      { error: String(err || "Generation failed"), html: "", slug: "" },
-      { status: 500 }
-    );
+    return fail(500, `OpenAI error: ${err?.message || String(err)}`);
   }
+
+  // 3) Rewrite all <img src="..."> to Cloudinary fetch URLs so the browser loads
+  //    Cloudinary (which fetches & caches the origin image) instead of hotlinking.
+  try {
+    htmlRaw = rewriteImagesToCloudinaryFetch(htmlRaw);
+  } catch (err: any) {
+    // Non-fatal: still return the original HTML if rewriting hiccups
+    console.warn("Image rewrite failed:", err);
+  }
+
+  // 4) Return JSON for the client to render
+  return NextResponse.json(
+    {
+      html: htmlRaw,
+      meta: {
+        bytes: htmlRaw.length,
+        rewrittenWithCloudinary: Boolean(
+          process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || process.env.CLOUDINARY_CLOUD_NAME
+        ),
+      },
+    },
+    { status: 200 }
+  );
 }
