@@ -1,182 +1,116 @@
-// app/page.tsx
 "use client";
 
 import { useState } from "react";
 
-type GenResult = { html?: string; error?: string; slug?: string };
+export const dynamic = "force-dynamic";
+// ✅ Must be a number or false, not a function
+export const revalidate = 0;
 
-export default function Home() {
-  const [query, setQuery] = useState("");
-  const [preview, setPreview] = useState("");
-  const [log, setLog] = useState<string>("");
+type GenResult = {
+  html?: string;
+  slug?: string;
+  error?: string;
+};
 
-  async function generate() {
-    setLog("");
-    setPreview("");
+export default function HomePage() {
+  const [prompt, setPrompt] = useState("");
+  const [result, setResult] = useState<GenResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt: query }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
       });
-      const txt = `POST /api/generate …\nstatus ${res.status}  |  ${res.headers
-        .get("content-type")
-        ?.split(";")[0]}\n`;
-      const data = (await res.json()) as GenResult;
-      setLog(txt + (data.error ? `ERR: ${data.error}` : `OK (${(data.html ?? "").length} bytes)`));
+
+      const data: GenResult = await res.json();
       if (data.error) {
-        alert(data.error);
-        return;
+        setError(data.error);
+      } else {
+        setResult(data);
       }
-      setPreview(data.html ?? "");
-    } catch (e: any) {
-      setLog(`Generate failed: ${String(e)}`);
-      alert(`Generate failed: ${String(e)}`);
+    } catch (err: any) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
     }
-  }
+  };
 
-  async function saveToArchive() {
-    if (!preview) {
-      alert("Nothing to save yet.");
-      return;
-    }
-    const titleMatch = preview.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-    const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, "").trim() : "Recipe";
-
+  const handleSave = async () => {
+    if (!result?.html || !result?.slug) return;
     try {
       const res = await fetch("/api/save", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ html: preview, title }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slug: result.slug,
+          html: result.html,
+        }),
       });
-      const data = await res.json();
+
       if (!res.ok) {
-        alert(data?.error || "Save failed");
-        return;
+        throw new Error("Failed to save archive");
       }
-      if (data?.url) {
-        window.location.href = data.url;
-        return;
-      }
-      if (data?.viewUrl) {
-        window.location.href = data.viewUrl;
-        return;
-      }
-      if (data?.slug) {
-        window.location.href = `/archive/${encodeURIComponent(data.slug)}`;
-        return;
-      }
-      alert("Save succeeded but no URL was returned by /api/save.");
-    } catch (e: any) {
-      alert(`Save failed: ${String(e)}`);
+      alert("Recipe archived successfully!");
+    } catch (err: any) {
+      alert(`Error saving: ${err.message}`);
     }
-  }
+  };
 
   return (
-    <main className="container" style={{ maxWidth: 860, margin: "24px auto", padding: 16 }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ fontSize: 40, lineHeight: 1.1, margin: 0 }}>Fresh Recipes</h1>
-        <a
-          href="/archive"
-          style={{
-            textDecoration: "none",
-            border: "1px solid #ddd",
-            padding: "12px 16px",
-            borderRadius: 12,
-            fontWeight: 600,
-          }}
-        >
-          Open Archive
-        </a>
-      </header>
-
-      <section
+    <main style={{ maxWidth: 800, margin: "2rem auto", padding: "0 1rem" }}>
+      <h1 style={{ fontSize: "2rem", marginBottom: "1rem" }}>
+        FreshRecipes Generator
+      </h1>
+      <textarea
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        placeholder="Describe the recipes you want..."
         style={{
-          marginTop: 24,
-          padding: 16,
-          border: "1px solid #e5e5e5",
-          borderRadius: 16,
-          background: "#fff",
+          width: "100%",
+          height: "100px",
+          marginBottom: "1rem",
+          padding: "0.5rem",
         }}
-      >
-        <label style={{ fontWeight: 700, fontSize: 22, display: "block", marginBottom: 8 }}>
-          What should we fetch & render?
-        </label>
-        <textarea
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          rows={4}
-          placeholder="e.g. 3 iconic Peruvian chicken recipes with photos"
-          style={{
-            width: "100%",
-            padding: 12,
-            borderRadius: 12,
-            border: "1px solid #ddd",
-            fontSize: 18,
-          }}
-        />
-        <div style={{ display: "flex", gap: 16, marginTop: 16 }}>
-          <button
-            onClick={generate}
-            style={{
-              background: "#2563eb",
-              color: "#fff",
-              border: "none",
-              padding: "14px 18px",
-              borderRadius: 14,
-              fontSize: 20,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            Generate HTML
-          </button>
-          <button
-            onClick={saveToArchive}
-            disabled={!preview}
-            style={{
-              opacity: preview ? 1 : 0.5,
-              background: "#f3f4f6",
-              border: "1px solid #e5e7eb",
-              padding: "14px 18px",
-              borderRadius: 14,
-              fontSize: 20,
-              fontWeight: 700,
-              cursor: preview ? "pointer" : "default",
-            }}
-          >
+      />
+      <div style={{ marginBottom: "1rem" }}>
+        <button
+          onClick={handleGenerate}
+          disabled={loading || !prompt}
+          style={{ marginRight: "1rem" }}
+        >
+          {loading ? "Generating..." : "Generate"}
+        </button>
+        {result?.html && (
+          <button onClick={handleSave} style={{ marginRight: "1rem" }}>
             Save to Archive
           </button>
-        </div>
-
-        <pre
+        )}
+        <a href="/archive" style={{ textDecoration: "underline" }}>
+          Open Archive
+        </a>
+      </div>
+      {error && (
+        <p style={{ color: "red", marginBottom: "1rem" }}>Error: {error}</p>
+      )}
+      {result?.html && (
+        <iframe
+          srcDoc={result.html}
           style={{
-            marginTop: 16,
-            whiteSpace: "pre-wrap",
-            background: "#0b0b0b",
-            color: "#e5e7eb",
-            padding: 12,
-            borderRadius: 12,
-            fontSize: 14,
+            width: "100%",
+            minHeight: "600px",
+            border: "1px solid #ccc",
+            borderRadius: "8px",
           }}
-        >
-          {log}
-        </pre>
-      </section>
-
-      <details open style={{ marginTop: 24 }}>
-        <summary style={{ fontWeight: 800, fontSize: 24 }}>Preview (inline)</summary>
-        <div
-          style={{
-            border: "1px solid #eee",
-            borderRadius: 16,
-            padding: 12,
-            marginTop: 12,
-            background: "#fff",
-          }}
-          dangerouslySetInnerHTML={{ __html: preview }}
         />
-      </details>
+      )}
     </main>
   );
 }
