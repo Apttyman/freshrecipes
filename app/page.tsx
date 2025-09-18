@@ -31,7 +31,7 @@ export default function HomePage() {
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        // Back-compat: send both keys so older API keeps working.
+        // Back-compat: send both keys so older APIs still work
         body: JSON.stringify({ query: prompt, prompt }),
       });
       if (!res.ok) {
@@ -41,7 +41,9 @@ export default function HomePage() {
       }
       const data = (await res.json()) as GenResult;
       const safeHtml = data.html ? rewriteImages(data.html) : "";
-      setResult({ ...data, html: safeHtml });
+      // purely visual: beautify without changing the prompt contract
+      const pretty = beautifyToCards(safeHtml);
+      setResult({ ...data, html: pretty });
       appendLog("✓ Done");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -51,7 +53,6 @@ export default function HomePage() {
     }
   }
 
-  // SAVE HELPERS
   async function saveWhole() {
     if (!result?.html) return;
     const description = prompt.trim().slice(0, 200);
@@ -148,9 +149,7 @@ export default function HomePage() {
               Type a natural-language request. We’ll fetch and format it.
             </p>
           </div>
-          <Link href="/archive" className="btn">
-            Open Archive
-          </Link>
+          <Link href="/archive" className="btn">Open Archive</Link>
         </div>
       </header>
 
@@ -176,11 +175,7 @@ export default function HomePage() {
                 <button className="btn" onClick={copyAll} aria-label="Copy all">
                   Copy all
                 </button>
-                <button
-                  className="btn"
-                  onClick={saveWhole}
-                  aria-label="Save all to archive"
-                >
+                <button className="btn" onClick={saveWhole} aria-label="Save all to archive">
                   Save all to archive
                 </button>
               </>
@@ -193,12 +188,11 @@ export default function HomePage() {
             <h2 id="preview" className="text-xl font-semibold mb-2">
               Preview
             </h2>
-            {/* Inject a small button into each recipe card for "Save highlight" */}
             <div
               id="recipe-html"
-              dangerouslySetInnerHTML={{
-                __html: injectSaveButtons(result.html),
-              }}
+              className="recipe-surface"
+              // IMPORTANT: we beautify the HTML before inserting (purely presentational)
+              dangerouslySetInnerHTML={{ __html: result.html! }}
             />
           </section>
         ) : null}
@@ -229,8 +223,9 @@ export default function HomePage() {
   );
 }
 
-// --- helpers ---
+/* ---------- VISUAL HELPERS (no prompt changes) ---------- */
 
+/** Make a reasonable page title from first H1/H2 if present */
 function makeWholeTitle(html: string): string | null {
   const m =
     html.match(/<h1[^>]*>(.*?)<\/h1>/i) ||
@@ -238,13 +233,107 @@ function makeWholeTitle(html: string): string | null {
   return m ? stripTags(m[1]).slice(0, 120) : null;
 }
 function stripTags(s: string) {
-  // This branch runs in the browser only (client component).
   const div = document.createElement("div");
   div.innerHTML = s;
   return div.textContent || div.innerText || s;
 }
 
-/** Injects a "Save highlight" button in each `article` card. */
+/**
+ * Purely visual “beautifier”:
+ * - If content already has <article> elements -> adds minimal controls and returns.
+ * - Otherwise, splits by H2/H3 into cards, wraps in a responsive grid, and injects Save buttons.
+ * - Never alters the user/system prompt.
+ */
+function beautifyToCards(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const alreadyArticles = doc.querySelectorAll("article").length > 0;
+
+    if (!alreadyArticles) {
+      // Build cards by splitting on h2/h3 sections
+      const root = doc.body;
+      const sections = Array.from(root.querySelectorAll("h2, h3"));
+      const grid = doc.createElement("div");
+      grid.className = "recipe-grid";
+
+      if (sections.length) {
+        sections.forEach((hdr, idx) => {
+          const card = doc.createElement("article");
+          card.className = "recipe-card";
+          const body = doc.createElement("div");
+          body.className = "recipe-body";
+
+          // Collect nodes until next header
+          const nodes: ChildNode[] = [];
+          let n = hdr as ChildNode;
+          while (n && n.parentNode === root) {
+            const next = n.nextSibling;
+            nodes.push(n);
+            if (next && (next as Element).matches?.("h2, h3")) break;
+            n = next as ChildNode;
+            if (!n) break;
+          }
+          nodes.forEach((nd) => body.appendChild(nd));
+          card.appendChild(body);
+          grid.appendChild(card);
+
+          // optional cover if an <img> immediately follows header
+          const firstImg = card.querySelector("img");
+          if (firstImg) firstImg.classList.add("recipe-cover");
+          const titleEl = card.querySelector("h1,h2,h3,h4");
+          if (titleEl) titleEl.classList.add("recipe-title");
+        });
+
+        // Replace body with grid
+        root.innerHTML = "";
+        root.appendChild(grid);
+      }
+
+      // Add a big page title if there’s an <h1>
+      const h1 = doc.querySelector("h1");
+      if (h1) {
+        const wrap = doc.createElement("div");
+        wrap.className = "recipe-page";
+        const subtitle = doc.querySelector("p, .subtitle");
+        const gridNode = doc.querySelector(".recipe-grid") || doc.body.firstElementChild;
+        wrap.appendChild(h1);
+        if (subtitle) {
+          const sub = doc.createElement("div");
+          sub.className = "recipe-subtitle";
+          sub.textContent = subtitle.textContent ?? "";
+          subtitle.remove();
+          wrap.appendChild(sub);
+        }
+        if (gridNode) wrap.appendChild(gridNode);
+        doc.body.innerHTML = "";
+        doc.body.appendChild(wrap);
+      }
+    }
+
+    // Inject a small "Save highlight" button into each card
+    doc.querySelectorAll("article").forEach((a) => {
+      const toolbar = doc.createElement("div");
+      toolbar.className = "btns";
+      toolbar.style.cssText =
+        "display:flex;gap:8px;flex-wrap:wrap;margin-top:8px";
+      toolbar.innerHTML = `
+        <button class="btn" data-save-highlight aria-label="Save this recipe highlight">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M6 4h12a2 2 0 0 1 2 2v13l-8-4-8 4V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="2" fill="none"/>
+          </svg>
+          Save highlight
+        </button>
+      `;
+      a.appendChild(toolbar);
+    });
+
+    return doc.body.innerHTML;
+  } catch {
+    // If DOMParser fails, at least add highlight buttons to raw HTML
+    return injectSaveButtons(html);
+  }
+}
+
 function injectSaveButtons(html: string): string {
   const toolbar =
     `<div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -255,17 +344,9 @@ function injectSaveButtons(html: string): string {
          Save highlight
        </button>
      </div>`;
-
-  // Add toolbar near end of each article if possible
   return html.replace(
     /<article\b([^>]*)>([\s\S]*?)<\/article>/gi,
-    (_full: string, attrs: string, inner: string) => {
-      const injected = inner.replace(
-        /<\/div>\s*<\/article>$/i,
-        (_match: string) => `${toolbar}</div></article>`
-      );
-      if (injected !== inner) return `<article${attrs}>${injected}</article>`;
-      return `<article${attrs}>${inner}${toolbar}</article>`;
-    }
+    (_full: string, attrs: string, inner: string) =>
+      `<article${attrs}>${inner}${toolbar}</article>`
   );
 }
