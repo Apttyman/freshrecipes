@@ -3,62 +3,84 @@
 
 import { useState } from "react";
 
+type GenResult = {
+  html?: string;
+  slug?: string;
+  error?: string;
+  rawSnippet?: string;
+};
+
 export default function Home() {
   const [input, setInput] = useState("");
   const [html, setHtml] = useState("");
   const [slug, setSlug] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [debug, setDebug] = useState<string | null>(null);
+
+  const [uiError, setUiError] = useState<string | null>(null);
+  const [rawFallback, setRawFallback] = useState<string | null>(null);
+
+  // always-visible small log so you can debug on phone
+  const [log, setLog] = useState<string[]>([]);
+  const appendLog = (msg: string) =>
+    setLog((prev) => [...prev, `${new Date().toLocaleTimeString()}  ${msg}`].slice(-20));
 
   async function handleGenerate() {
     setBusy(true);
-    setError(null);
-    setDebug(null);
+    setUiError(null);
+    setRawFallback(null);
     setHtml("");
     setSlug("");
+    setLog([]);
 
     try {
-      const res = await fetch("/api/generate", {
+      appendLog("POST /api/generate …");
+      const res = await fetch(`/api/generate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt: input }),
+        // send both `prompt` and `q` just in case server expects either
+        body: JSON.stringify({ prompt: input, q: input }),
       });
 
-      const text = await res.text(); // read raw
-      // try to parse JSON; if it fails, show raw text so the phone UI isn’t blank
-      let data: any = null;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        setError(`Non-JSON from /api/generate (status ${res.status})`);
-        setDebug(text.slice(0, 2000));
+      const contentType = res.headers.get("content-type") || "unknown";
+      const text = await res.text();
+      appendLog(`status ${res.status} ${res.ok ? "OK" : "ERR"} | ${contentType} | ${text.length} bytes`);
+
+      // If it’s not JSON, show the body so it doesn’t look blank
+      if (!contentType.toLowerCase().includes("application/json")) {
+        setUiError(`Non-JSON from /api/generate (HTTP ${res.status})`);
+        setRawFallback(text.slice(0, 2000));
         return;
       }
 
-      if (!res.ok) {
-        setError(`HTTP ${res.status}`);
+      let data: GenResult;
+      try {
+        data = JSON.parse(text);
+      } catch (e: any) {
+        setUiError(`JSON parse error from /api/generate`);
+        setRawFallback(text.slice(0, 2000));
+        return;
       }
 
-      if (data?.error) {
-        setError(String(data.error));
-      }
-      if (data?.rawSnippet) {
-        setDebug(String(data.rawSnippet));
+      if (!res.ok || data.error) {
+        setUiError(data.error ? String(data.error) : `HTTP ${res.status}`);
+        if (data.rawSnippet) setRawFallback(String(data.rawSnippet));
+        return;
       }
 
-      const gotHtml = (data?.html ?? "").toString();
-      const gotSlug = (data?.slug ?? "").toString();
+      const gotHtml = (data.html || "").toString();
+      const gotSlug = (data.slug || "").toString();
 
-      if (gotHtml.trim().length === 0) {
-        if (!data?.error) setError("Empty HTML in response.");
+      if (!gotHtml.trim()) {
+        setUiError("Empty HTML in response.");
+        if (data.rawSnippet) setRawFallback(String(data.rawSnippet));
         return;
       }
 
       setHtml(gotHtml);
       setSlug(gotSlug);
+      appendLog(`Rendered HTML (${gotHtml.length} chars)`);
     } catch (e: any) {
-      setError(`Request failed: ${String(e?.message || e)}`);
+      setUiError(`Request failed: ${String(e?.message || e)}`);
     } finally {
       setBusy(false);
     }
@@ -67,74 +89,72 @@ export default function Home() {
   async function handleSave() {
     if (!html) return;
     setBusy(true);
-    setError(null);
+    setUiError(null);
 
     try {
-      const res = await fetch("/api/save", {
+      appendLog("POST /api/save …");
+      const res = await fetch(`/api/save`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ html, slug }),
       });
+
+      const ct = res.headers.get("content-type") || "unknown";
       const t = await res.text();
-      let data: any = null;
+      appendLog(`save status ${res.status} | ${ct} | ${t.length} bytes`);
+
+      if (!ct.toLowerCase().includes("application/json")) {
+        setUiError(`Non-JSON from /api/save (HTTP ${res.status})`);
+        setRawFallback(t.slice(0, 2000));
+        return;
+      }
+
+      let data: any;
       try {
         data = JSON.parse(t);
       } catch {
-        setError(`Non-JSON from /api/save (status ${res.status})`);
-        setDebug(t.slice(0, 2000));
+        setUiError("JSON parse error from /api/save.");
+        setRawFallback(t.slice(0, 2000));
         return;
       }
 
       if (!res.ok || data?.error) {
-        setError(`Save failed: ${data?.error || `HTTP ${res.status}`}`);
+        setUiError(`Save failed: ${data?.error || `HTTP ${res.status}`}`);
         return;
       }
 
-      // If API returns a URL, open it. Otherwise notify.
       const url: string | undefined = data?.url || data?.htmlUrl || data?.view;
       if (url) {
         window.location.href = url;
       } else {
-        setError(`Save succeeded but no URL was returned by /api/save.`);
+        setUiError("Save succeeded but no URL was returned by /api/save.");
       }
     } catch (e: any) {
-      setError(`Save request failed: ${String(e?.message || e)}`);
+      setUiError(`Save request failed: ${String(e?.message || e)}`);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <main style={{ maxWidth: 900, margin: "0 auto", padding: "24px" }}>
+    <main style={{ maxWidth: 900, margin: "0 auto", padding: 24 }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ fontSize: 36, fontWeight: 800, letterSpacing: -0.5 }}>Fresh Recipes</h1>
         <a
           href="/archive"
-          style={{
-            border: "1px solid #ddd",
-            padding: "10px 14px",
-            borderRadius: 10,
-            textDecoration: "none",
-          }}
+          style={{ border: "1px solid #ddd", padding: "10px 14px", borderRadius: 10, textDecoration: "none" }}
         >
           Open Archive
         </a>
       </header>
 
-      <section
-        style={{
-          border: "1px solid #eee",
-          padding: 16,
-          borderRadius: 16,
-          marginTop: 12,
-        }}
-      >
+      <section style={{ border: "1px solid #eee", padding: 16, borderRadius: 16, marginTop: 12 }}>
         <h2 style={{ fontSize: 22, marginBottom: 10 }}>What should we fetch &amp; render?</h2>
         <textarea
           rows={4}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="e.g., 3 iconic homemade ice cream recipes with step photos"
+          placeholder="e.g., 3 homemade ice cream recipes with step photos"
           style={{
             width: "100%",
             border: "1px solid #ddd",
@@ -180,7 +200,27 @@ export default function Home() {
           </button>
         </div>
 
-        {error && (
+        {/* Inline network log for phone debugging */}
+        <details open style={{ marginTop: 12 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Network log</summary>
+          <pre
+            style={{
+              background: "#f8fafc",
+              border: "1px solid #e5e7eb",
+              borderRadius: 8,
+              padding: 10,
+              fontSize: 12,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              maxHeight: 160,
+              overflow: "auto",
+            }}
+          >
+            {log.join("\n") || "—"}
+          </pre>
+        </details>
+
+        {uiError && (
           <div
             style={{
               color: "#b91c1c",
@@ -194,24 +234,24 @@ export default function Home() {
               wordBreak: "break-word",
             }}
           >
-            {JSON.stringify({ error }, null, 2)}
+            {uiError}
           </div>
         )}
-        {debug && (
+        {rawFallback && (
           <details style={{ marginTop: 8 }}>
-            <summary style={{ cursor: "pointer" }}>Show raw response (debug)</summary>
+            <summary style={{ cursor: "pointer" }}>Show raw response (first 2KB)</summary>
             <pre
               style={{
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
-                background: "#f8fafc",
-                border: "1px solid #e5e7eb",
+                background: "#fff7ed",
+                border: "1px solid #fed7aa",
                 borderRadius: 8,
                 padding: 10,
                 fontSize: 12,
               }}
             >
-              {debug}
+              {rawFallback}
             </pre>
           </details>
         )}
@@ -219,18 +259,8 @@ export default function Home() {
 
       <section style={{ marginTop: 20 }}>
         <details open>
-          <summary style={{ fontSize: 22, fontWeight: 700 }}>
-            Preview (inline)
-          </summary>
-          <div
-            style={{
-              border: "1px solid #eee",
-              borderRadius: 12,
-              marginTop: 10,
-              padding: 4,
-              minHeight: 200,
-            }}
-          >
+          <summary style={{ fontSize: 22, fontWeight: 700 }}>Preview (inline)</summary>
+          <div style={{ border: "1px solid #eee", borderRadius: 12, marginTop: 10, padding: 4, minHeight: 200 }}>
             {html ? (
               <iframe
                 title="preview"
@@ -239,9 +269,7 @@ export default function Home() {
                 srcDoc={html}
               />
             ) : (
-              <div style={{ color: "#666", padding: 16, fontStyle: "italic" }}>
-                Nothing to show yet.
-              </div>
+              <div style={{ color: "#666", padding: 16, fontStyle: "italic" }}>Nothing to show yet.</div>
             )}
           </div>
         </details>
