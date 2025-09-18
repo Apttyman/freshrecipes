@@ -9,9 +9,8 @@ import {
   slugify,
   toPureHtml,
   ensureAtLeastOneImage,
-  addNoReferrer,
   rewriteImagesWithCloudinary,
-} from "../../lib/html-tools"; // ⬅️ relative import
+} from "../../lib/html-tools"; // relative import; no addNoReferrer anymore
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,12 +24,14 @@ async function readSystemPrompt(): Promise<string> {
     const buf = await fs.readFile(promptPath, "utf8");
     return buf.toString();
   } catch {
+    // Minimal fallback if the file is missing
     return "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>. Include at least one <img> with an absolute HTTPS src. Do not include Markdown fences or JSON.";
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
+    // Accept prompt from body or query
     let promptFromBody: string | undefined;
     try {
       const body = (await req.json()) as any;
@@ -68,10 +69,10 @@ export async function POST(req: NextRequest) {
 
     const raw = (choices[0]?.message?.content ?? "").trim();
 
+    // Post-processing (no noreferrer anywhere):
     const pure = toPureHtml(raw);
     const withImage = ensureAtLeastOneImage(pure);
-    const htmlNoRef = addNoReferrer(withImage);
-    const html = rewriteImagesWithCloudinary(htmlNoRef);
+    const html = rewriteImagesWithCloudinary(withImage);
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
   } catch (err) {
