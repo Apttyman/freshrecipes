@@ -1,16 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { rewriteImages } from "@/app/lib/html-tools";
 
 type GenResult = { html?: string; slug?: string; log?: string };
 
 export default function HomePage() {
-  const [prompt, setPrompt] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
   const [result, setResult] = useState<GenResult | null>(null);
-  const [log, setLog] = useState("");
+  const [log, setLog] = useState<string>("");
   const [toast, setToast] = useState<string>("");
 
   function appendLog(line: string) {
@@ -43,8 +43,9 @@ export default function HomePage() {
       const safeHtml = data.html ? rewriteImages(data.html) : "";
       setResult({ ...data, html: safeHtml });
       appendLog("✓ Done");
-    } catch (e: any) {
-      appendLog(`✖ Error: ${e?.message ?? "unknown"}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      appendLog(`✖ Error: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -83,7 +84,7 @@ export default function HomePage() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        kind: "highlight",
+        kind: "highlight" as const,
         title,
         description: title,
         html,
@@ -98,11 +99,14 @@ export default function HomePage() {
     window.open(`/r/${id}`, "_blank", "noopener,noreferrer");
   }
 
-  function onSaveHighlightClick(e: React.MouseEvent<HTMLButtonElement>) {
-    const btn = e.currentTarget;
-    const card = btn.closest("article");
+  function onSaveHighlightClick(e: Event) {
+    const target = e.target as HTMLElement | null;
+    const btn = target?.closest<HTMLButtonElement>("[data-save-highlight]");
+    if (!btn) return;
+    e.preventDefault();
+    const card = btn.closest<HTMLElement>("article");
     if (!card) return;
-    saveCard(card as HTMLElement);
+    void saveCard(card);
   }
 
   function copyAll() {
@@ -126,10 +130,8 @@ export default function HomePage() {
   useEffect(() => {
     // delegate clicks for per-card Save buttons rendered within result.html
     function handler(ev: Event) {
-      const t = ev.target as HTMLElement;
-      if (t.closest("[data-save-highlight]")) {
-        ev.preventDefault();
-        onSaveHighlightClick(ev as unknown as React.MouseEvent<HTMLButtonElement>);
+      if ((ev.target as HTMLElement | null)?.closest("[data-save-highlight]")) {
+        onSaveHighlightClick(ev);
       }
     }
     document.addEventListener("click", handler);
@@ -146,7 +148,9 @@ export default function HomePage() {
               Type a natural-language request. We’ll fetch and format it.
             </p>
           </div>
-          <Link href="/archive" className="btn">Open Archive</Link>
+          <Link href="/archive" className="btn">
+            Open Archive
+          </Link>
         </div>
       </header>
 
@@ -172,7 +176,11 @@ export default function HomePage() {
                 <button className="btn" onClick={copyAll} aria-label="Copy all">
                   Copy all
                 </button>
-                <button className="btn" onClick={saveWhole} aria-label="Save all to archive">
+                <button
+                  className="btn"
+                  onClick={saveWhole}
+                  aria-label="Save all to archive"
+                >
                   Save all to archive
                 </button>
               </>
@@ -224,32 +232,38 @@ export default function HomePage() {
 // --- helpers ---
 
 function makeWholeTitle(html: string): string | null {
-  const m = html.match(/<h1[^>]*>(.*?)<\/h1>/i) || html.match(/<h2[^>]*>(.*?)<\/h2>/i);
+  const m =
+    html.match(/<h1[^>]*>(.*?)<\/h1>/i) ||
+    html.match(/<h2[^>]*>(.*?)<\/h2>/i);
   return m ? stripTags(m[1]).slice(0, 120) : null;
 }
 function stripTags(s: string) {
-  const div = globalThis.document?.createElement("div");
-  if (!div) return s.replace(/<[^>]+>/g, "");
+  // This branch runs in the browser only (client component).
+  const div = document.createElement("div");
   div.innerHTML = s;
   return div.textContent || div.innerText || s;
 }
-/** Injects a "Save highlight" button in each `article.recipe` card, matching your card-grid inspiration. */
-function injectSaveButtons(html: string) {
-  // add a small toolbar to each article
+
+/** Injects a "Save highlight" button in each `article` card. */
+function injectSaveButtons(html: string): string {
+  const toolbar =
+    `<div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+       <button class="btn" data-save-highlight aria-label="Save this recipe highlight">
+         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+           <path d="M6 4h12a2 2 0 0 1 2 2v13l-8-4-8 4V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="2" fill="none"/>
+         </svg>
+         Save highlight
+       </button>
+     </div>`;
+
+  // Add toolbar near end of each article if possible
   return html.replace(
     /<article\b([^>]*)>([\s\S]*?)<\/article>/gi,
-    (full, attrs, inner) => {
-      const toolbar =
-        `<div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-           <button class="btn" data-save-highlight aria-label="Save this recipe highlight">
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-               <path d="M6 4h12a2 2 0 0 1 2 2v13l-8-4-8 4V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="2" fill="none"/>
-             </svg>
-             Save highlight
-           </button>
-         </div>`;
-      // try to append toolbar near the end of the card body
-      const injected = inner.replace(/<\/div>\s*<\/article>$/i, (_m) => `${toolbar}</div></article>`);
+    (_full: string, attrs: string, inner: string) => {
+      const injected = inner.replace(
+        /<\/div>\s*<\/article>$/i,
+        (_match: string) => `${toolbar}</div></article>`
+      );
       if (injected !== inner) return `<article${attrs}>${injected}</article>`;
       return `<article${attrs}>${inner}${toolbar}</article>`;
     }
