@@ -7,7 +7,7 @@ import {
   rewriteImagesWithCloudinaryFetch,
   stripNoReferrer,
   slugify,
-} from "@/app/lib/html-tools";
+} from "../../lib/html-tools"; // ← relative path
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -17,19 +17,17 @@ export const runtime = "nodejs";
 const MODEL = "gpt-4o-mini";
 
 async function loadSystemPrompt() {
-  // keep using your system-prompt.txt
   const p = resolve(process.cwd(), "app/prompt/system-prompt.txt");
   return await readFile(p, "utf8");
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // accept prompt from body or ?q=
     let promptFromBody: string | undefined;
     try {
       const body = (await req.json()) as any;
       promptFromBody = body?.prompt ?? body?.query ?? body?.text;
-    } catch {/* ignore */}
+    } catch {}
     const promptFromQuery = req.nextUrl.searchParams.get("q") ?? undefined;
 
     const userPrompt = (promptFromBody ?? promptFromQuery ?? "").trim();
@@ -62,14 +60,9 @@ export async function POST(req: NextRequest) {
 
     const raw = (choices[0]?.message?.content ?? "").trim();
 
-    // sanitize & post-process
     const pure = toPureHtml(raw);
     const withImage = ensureAtLeastOneImage(pure);
-
-    // IMPORTANT: remove referrerpolicy/crossorigin/meta first
     const noRef = stripNoReferrer(withImage);
-
-    // Rewrite all <img> to Cloudinary fetch URLs
     const html = rewriteImagesWithCloudinaryFetch(noRef);
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
