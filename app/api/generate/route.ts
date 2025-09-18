@@ -1,35 +1,87 @@
 // app/api/generate/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { readFile } from "node:fs/promises";
+import { readFile } from "fs/promises";
+import path from "path";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const MODEL = "gpt-4o-mini";
 
-// ---------- tiny utils ----------
-function slugify(s: string) {
-  return (s || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9-_]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+/* --------------------------- route handler --------------------------- */
+export async function POST(req: NextRequest) {
+  try {
+    // read prompt: app/prompt/system-prompt.txt
+    const promptPath = path.join(process.cwd(), "app", "prompt", "system-prompt.txt");
+    const systemPrompt = await readFile(promptPath, "utf8");
+
+    // read user text (body OR query `q`)
+    let userText = "";
+    try {
+      const body = (await req.json()) as any;
+      userText = (body?.prompt ?? body?.query ?? body?.text ?? "").trim();
+    } catch { /* ignore */ }
+    if (!userText) {
+      userText = (req.nextUrl.searchParams.get("q") ?? "").trim();
+    }
+    if (!userText) {
+      return NextResponse.json({ error: "Missing prompt", html: "", slug: "" }, { status: 400 });
+    }
+
+    if (!process.env.OPENAI_API_KEY) {
+      const msg =
+        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
+      return NextResponse.json({ html: msg, slug: slugify(userText) }, { status: 200 });
+    }
+
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    const messages = [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userText },
+    ];
+
+    const resp = await client.chat.completions.create({
+      model: MODEL,
+      temperature: 0.7,
+      messages,
+    });
+
+    const raw = (resp.choices?.[0]?.message?.content ?? "").trim();
+
+    // Post-process
+    const pure = toPureHtml(raw);
+    const withImage = ensureAtLeastOneImage(pure);
+    const htmlNoRef = addNoReferrer(withImage);
+    const html = rewriteImagesWithCloudinary(htmlNoRef); // ← rehost all <img src=>
+
+    return NextResponse.json(
+      { html, slug: slugify(userText) },
+      { status: 200 }
+    );
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: String(err?.message || err || "Generation failed"), html: "", slug: "" },
+      { status: 500 }
+    );
+  }
 }
+
+/* ------------------------------- helpers ------------------------------ */
 
 function toPureHtml(s: string): string {
   let out = (s ?? "").trim();
 
-  // If the model returned JSON like: { "html": "<html>...</html>" }
+  // JSON shape: { "html": "<html>...</html>" }
   if (out.startsWith("{")) {
     try {
       const j = JSON.parse(out);
       if (j && typeof j.html === "string") out = j.html;
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
 
-  // Strip fenced code blocks: ```html ... ``` or ``` ... ```
+  // Strip ```html ... ``` or ``` ... ```
   const mHtml = out.match(/^```html\s*([\s\S]*?)\s*```$/i);
   if (mHtml) return mHtml[1].trim();
   const mAny = out.match(/^```\s*([\s\S]*?)\s*```$/);
@@ -45,6 +97,7 @@ function ensureAtLeastOneImage(html: string): string {
     `<img src="https://picsum.photos/1200/630" alt="" ` +
     `style="width:100%;height:auto;border-radius:12px;display:block;margin:16px 0" />`;
 
+  // After first H1, or after <body>, or prepend
   if (/(<h1[^>]*>[\s\S]*?<\/h1>)/i.test(html)) {
     return html.replace(/(<h1[^>]*>[\s\S]*?<\/h1>)/i, `$1\n${hero}`);
   }
@@ -57,7 +110,7 @@ function ensureAtLeastOneImage(html: string): string {
 function addNoReferrer(html: string): string {
   let out = html || "";
 
-  // meta name="referrer" no-referrer
+  // meta referrer
   const meta = `<meta name="referrer" content="no-referrer">`;
   if (/<head[^>]*>/i.test(out)) {
     if (!/name=["']referrer["']/i.test(out)) {
@@ -69,7 +122,7 @@ function addNoReferrer(html: string): string {
     out = `<head>\n${meta}\n</head>\n` + out;
   }
 
-  // add attributes to each <img>
+  // add attrs to every <img>
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
     let t = tag
       .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
@@ -81,88 +134,52 @@ function addNoReferrer(html: string): string {
   return out;
 }
 
-/** Re-host every <img src="..."> via Cloudinary 'fetch' (no uploads). */
+/**
+ * Re-host every <img src="..."> via Cloudinary "fetch".
+ * Requires env: CLOUDINARY_CLOUD_NAME (or NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME)
+ * Falls back to original src if env missing or src is not http(s).
+ */
 function rewriteImagesWithCloudinary(html: string): string {
-  const cloud = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
-  if (!cloud) return html; // silently keep originals if not configured
+  const cloudName =
+    process.env.CLOUDINARY_CLOUD_NAME ||
+    process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ||
+    "";
 
-  const base = `https://res.cloudinary.com/${cloud}/image/fetch/f_auto,q_auto/`;
+  if (!cloudName) return html; // nothing to rewrite
 
-  return html.replace(/<img\b[^>]*\bsrc\s*=\s*(['"])(.*?)\1[^>]*>/gi, (tag, q, src) => {
-    // only http(s) absolute sources
+  const fetchBase = `https://res.cloudinary.com/${cloudName}/image/fetch/f_auto,q_auto/`;
+
+  return html.replace(/<img\b[^>]*\bsrc\s*=\s*("([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi, (tag, _m, g1, g2, g3) => {
+    const srcRaw = (g1 || g2 || g3 || "").toString().trim();
+    const src = srcRaw.replace(/^["']|["']$/g, ""); // normalize quotes if any
+
+    // Only rewrite absolute http(s) — leave data:, cid:, blob:, relative paths alone
     if (!/^https?:\/\//i.test(src)) return tag;
 
-    const proxied = base + encodeURIComponent(src);
-    return tag.replace(src, proxied);
+    // Avoid double rewriting if already Cloudinary fetch
+    if (/res\.cloudinary\.com\/[^/]+\/image\/fetch/i.test(src)) return tag;
+
+    const encoded = encodeURIComponent(src); // Cloudinary expects URL-encoded remote URL
+    const proxied = `${fetchBase}${encoded}`;
+
+    // replace the first src="...":
+    let out = tag.replace(
+      /\bsrc\s*=\s*("([^"]+)"|'([^']+)'|([^\s>]+))/i,
+      `src="${proxied}"`
+    );
+
+    // ensure referrer attrs still present (in case earlier step was skipped)
+    if (!/\breferrerpolicy=/i.test(out)) {
+      out = out.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer"${m}`);
+    }
+    if (!/\bcrossorigin=/i.test(out)) {
+      out = out.replace(/\/?>$/, (m) => ` crossorigin="anonymous"${m}`);
+    }
+
+    return out;
   });
 }
 
-// ---------- main handler ----------
-export async function POST(req: NextRequest) {
-  try {
-    // Accept prompt from body OR query (?q=)
-    let promptFromBody: string | undefined;
-    try {
-      const body = (await req.json()) as any;
-      promptFromBody = body?.prompt ?? body?.query ?? body?.text;
-    } catch {
-      /* empty or not JSON */
-    }
-    const promptFromQuery = req.nextUrl.searchParams.get("q") ?? undefined;
-    const userPrompt = (promptFromBody ?? promptFromQuery ?? "").trim();
-
-    if (!userPrompt) {
-      return NextResponse.json(
-        { error: "Missing prompt", html: "", slug: "" },
-        { status: 400 }
-      );
-    }
-
-    if (!process.env.OPENAI_API_KEY) {
-      const msg =
-        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
-      return NextResponse.json({ html: msg, slug: slugify(userPrompt) }, { status: 200 });
-    }
-
-    // Load your system prompt text file (kept in repo)
-    const systemPrompt = await readFile(
-      // ../../prompt/system-prompt.txt relative to this file
-      new URL("../../prompt/system-prompt.txt", import.meta.url),
-      "utf8"
-    );
-
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ];
-
-    // Call model
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      temperature: 0.7,
-      messages,
-    });
-
-    // Raw model content → plain HTML
-    const raw = (completion.choices[0]?.message?.content ?? "").trim();
-    const pure = toPureHtml(raw);
-
-    // Post-process: ensure image, no-referrer, then re-host images via Cloudinary
-    const withImage = ensureAtLeastOneImage(pure);
-    const htmlNoRef = addNoReferrer(withImage);
-    const html = rewriteImagesWithCloudinary(htmlNoRef);
-
-    return NextResponse.json(
-      { html, slug: slugify(userPrompt) },
-      { status: 200 }
-    );
-  } catch (err: any) {
-    // Return the error string so the UI can show it
-    return NextResponse.json(
-      { error: String(err ?? "Generation failed"), html: "", slug: "" },
-      { status: 500 }
-    );
-  }
+function slugify(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 }
