@@ -1,9 +1,5 @@
 import { NextRequest } from "next/server";
 
-/**
- * Lightweight image proxy for remote <img> URLs when Cloudinary isn’t configured.
- * Security: allows only http/https, blocks internal addresses.
- */
 export async function GET(req: NextRequest) {
   try {
     const u = req.nextUrl.searchParams.get("u");
@@ -20,7 +16,6 @@ export async function GET(req: NextRequest) {
       return new Response("Blocked scheme", { status: 400 });
     }
 
-    // Basic SSRF guard: block link-local/private nets by hostname pattern.
     const host = target.hostname;
     if (
       /(^|\.)(localhost|local|internal)$/.test(host) ||
@@ -32,9 +27,8 @@ export async function GET(req: NextRequest) {
     }
 
     const res = await fetch(target.toString(), {
-      // Forward immutable cache headers when possible
       headers: { accept: "image/*,*/*;q=0.8" },
-      cache: "no-store",
+      cache: "no-store"
     });
 
     if (!res.ok) {
@@ -47,7 +41,7 @@ export async function GET(req: NextRequest) {
     headers.set("cache-control", "public, max-age=86400, immutable");
 
     return new Response(res.body, { status: 200, headers });
-  } catch (e) {
+  } catch {
     return new Response("Proxy error", { status: 500 });
   }
 }
