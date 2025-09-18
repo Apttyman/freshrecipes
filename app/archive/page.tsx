@@ -1,153 +1,93 @@
-// app/archive/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import useSWR from "swr";
+import Link from "next/link";
 
-type Row = {
-  slug: string;
-  title: string;
-  query: string | null;
-  createdAt: number;
-  urlHtml: string | null;
-  urlJson: string | null;
-};
+type Row = { id: string; title: string; description: string; createdAt: string };
+type Data = { full: Row[]; highlight: Row[] };
+
+const fetcher = (u: string) => fetch(u).then((r) => r.json());
 
 export default function ArchivePage() {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [err, setErr] = useState<string>("");
+  const { data, mutate } = useSWR<Data>("/api/archive/list", fetcher);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/recipes", { cache: "no-store" });
-        const data = await res.json();
-        setRows(Array.isArray(data?.recipes) ? data.recipes : []);
-      } catch (e: any) {
-        setErr(e?.message || "Failed to load archive");
-      }
-    })();
-  }, []);
+  async function onDelete(id: string) {
+    if (!confirm("Delete this item?")) return;
+    await fetch("/api/archive/delete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    mutate();
+  }
+
+  function RowList({ rows }: { rows: Row[] }) {
+    return (
+      <div className="space-y-2">
+        {rows.map((r) => (
+          <div key={r.id} className="card p-3 flex items-center gap-3 justify-between">
+            <div className="min-w-0">
+              <div className="font-semibold truncate">
+                <Link href={`/r/${r.id}`}>{r.title}</Link>
+              </div>
+              <div className="text-slate-600 text-sm truncate">{r.description}</div>
+              <div className="text-slate-500 text-xs">{new Date(r.createdAt).toLocaleString()}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Send/Print */}
+              <Link className="btn" href={`/r/${r.id}?print=1`} title="Print to PDF">
+                <ArrowUpIcon />
+              </Link>
+              {/* Delete */}
+              <button className="btn" onClick={() => onDelete(r.id)} title="Delete">
+                <TrashIcon />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-dvh bg-[radial-gradient(1200px_800px_at_110%_-10%,rgba(46,91,255,.08),transparent_60%),radial-gradient(900px_700px_at_-10%_0%,rgba(20,184,166,.06),transparent_60%),linear-gradient(#fafbfc,#f7f8fb)]">
-      {/* Header (match home) */}
-      <header className="relative z-10 border-b border-black/5 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-md bg-gradient-to-br from-blue-500 to-teal-400 shadow-sm" />
-            <span className="text-sm font-semibold tracking-wide text-slate-800">
-              FreshRecipes
-            </span>
-          </div>
-          <a
-            href="/"
-            className="rounded-full border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Home
-          </a>
+    <div className="container">
+      <header className="py-8">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <h1 className="text-3xl font-semibold">Archive</h1>
+          <Link href="/" className="btn">← Back</Link>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-8">
-        <h1 className="mb-4 text-2xl font-bold text-slate-900">Archive</h1>
-
-        {err && (
-          <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-            {err}
-          </div>
-        )}
-
-        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <table className="min-w-full table-fixed">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="w-1/3 px-4 py-3 text-left text-sm font-semibold text-slate-700">
-                  File
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">
-                  Description (original query)
-                </th>
-                <th className="w-44 px-4 py-3 text-left text-sm font-semibold text-slate-700">
-                  Date
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 bg-white">
-              {rows.map((r) => {
-                const file = `${r.slug}.html`;
-                const desc =
-                  (r.query && r.query.trim()) ||
-                  (r.title && r.title.trim()) ||
-                  "—";
-                return (
-                  <tr key={r.slug} className="hover:bg-slate-50">
-                    <td className="truncate px-4 py-3 align-top">
-                      <div className="flex items-center gap-2">
-                        <a
-                          href={`/recipes/${encodeURIComponent(r.slug)}`}
-                          className="text-blue-600 hover:underline"
-                          title={`Open ${file} in app`}
-                        >
-                          {file}
-                        </a>
-                        {r.urlHtml && (
-                          <a
-                            href={r.urlHtml}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
-                            title="Open raw blob"
-                          >
-                            Blob
-                          </a>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 align-top">
-                      <div
-                        className="max-w-[60ch] overflow-hidden text-ellipsis whitespace-nowrap text-slate-800"
-                        title={desc}
-                      >
-                        {desc}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 align-top text-sm text-slate-600">
-                      {new Date(r.createdAt).toLocaleString()}
-                    </td>
-                  </tr>
-                );
-              })}
-              {rows.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={3}
-                    className="px-4 py-10 text-center text-sm text-slate-500"
-                  >
-                    No recipes yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+      {!data ? (
+        <div className="card p-4">Loading…</div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-6">
+          <section className="space-y-3">
+            <h2 className="text-xl font-semibold">Saved Results</h2>
+            <RowList rows={data.full} />
+          </section>
+          <section className="space-y-3">
+            <h2 className="text-xl font-semibold">Recipe Highlights</h2>
+            <RowList rows={data.highlight} />
+          </section>
         </div>
-      </main>
-
-      <footer className="border-t border-black/5 bg-white">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-8 text-center md:flex-row md:text-left">
-          <p className="text-sm text-slate-500">
-            © {new Date().getFullYear()} FreshRecipes. All rights reserved.
-          </p>
-          <nav className="flex items-center gap-4 text-sm">
-            <a
-              className="text-slate-500 hover:text-slate-700"
-              href="/api/health"
-              aria-label="Health check"
-            >
-              Health
-            </a>
-          </nav>
-        </div>
-      </footer>
+      )}
     </div>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 6h18M8 6v-2a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" fill="none" stroke="currentColor" strokeWidth="2"/>
+      <path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+function ArrowUpIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 19V5M12 5l-6 6M12 5l6 6" fill="none" stroke="currentColor" strokeWidth="2"/>
+    </svg>
   );
 }
