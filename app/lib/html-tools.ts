@@ -1,46 +1,41 @@
-// app/lib/html-tools.ts
-/**
- * Rewrite all <img src="..."> to Cloudinary "fetch" URLs so images are
- * pulled and cached by Cloudinary (not by your Vercel server).
- * Works without Cloudinary secret; needs only cloud name.
- *
- * Set NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME (or CLOUDINARY_CLOUD_NAME).
- */
+// Utilities for massaging LLM-provided HTML before rendering
+
 const CLOUD_NAME =
-  process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ||
-  process.env.CLOUDINARY_CLOUD_NAME ||
-  "";
+  typeof process !== "undefined"
+    ? process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
+    : undefined;
 
 const CLD_FETCH_BASE = CLOUD_NAME
   ? `https://res.cloudinary.com/${CLOUD_NAME}/image/fetch/f_auto,q_auto`
   : null;
 
-// skip schemes Cloudinary can’t/shouldn’t fetch
-const SKIP_SCHEMES = /^(data:|blob:|about:|cid:)/i;
+const PROXY_BASE = "/api/img?u="; // fallback to local proxy
 
-// already rewritten?
-const IS_ALREADY_CLD = /https:\/\/res\.cloudinary\.com\/[^/]+\/image\/fetch/i;
+const SKIP_SCHEMES = /^(data:|blob:|about:|chrome:|edge:)/i;
+const IS_ALREADY_CLD = /res\.cloudinary\.com/i;
 
 /**
- * Rewrites only the src value; keeps the original <img> tag intact.
+ * Rewrites <img src="..."> in an HTML string to either:
+ * - Cloudinary "fetch" delivery when NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME is set
+ * - local /api/img?u= proxy otherwise
+ *
+ * Leaves data: and already-cloudinary URLs untouched.
  */
-export function rewriteImagesToCloudinaryFetch(html: string): string {
-  if (!CLD_FETCH_BASE) return html;
+export function rewriteImages(html: string): string {
+  const base = CLD_FETCH_BASE ?? PROXY_BASE;
 
   return html.replace(
     /<img\b([^>]*?)\bsrc=(['"])([^'"]+)\2([^>]*)>/gi,
     (full, preAttrs, quote, src, postAttrs) => {
       try {
         if (!src || SKIP_SCHEMES.test(src) || IS_ALREADY_CLD.test(src)) {
-          return full; // leave untouched
+          return full;
         }
-        // Absolute-ify protocol-relative src
-        const absoluteSrc = src.startsWith("//") ? `https:${src}` : src;
-
-        const encoded = encodeURIComponent(absoluteSrc);
-        const cldUrl = `${CLD_FETCH_BASE}/${encoded}`;
-
-        return `<img${preAttrs}src=${quote}${cldUrl}${quote}${postAttrs}>`;
+        const encoded = encodeURIComponent(src);
+        const newSrc = CLD_FETCH_BASE
+          ? `${base}/${encoded}`
+          : `${base}${encoded}`;
+        return `<img${preAttrs}src=${quote}${newSrc}${quote}${postAttrs}>`;
       } catch {
         return full;
       }
