@@ -1,285 +1,231 @@
 // app/page.tsx
-// app/page.tsx (very top)
-"use client";
+"use client"; // MUST be first
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-
-
 import { useState } from "react";
 
-type GenResult = {
-  html?: string;
-  slug?: string;
-  error?: string;
-  rawSnippet?: string;
-};
+type GenResult = { html?: string; slug?: string; error?: string; debug?: any };
 
-export default function Home() {
-  const [input, setInput] = useState("");
-  const [html, setHtml] = useState("");
-  const [slug, setSlug] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const [uiError, setUiError] = useState<string | null>(null);
-  const [rawFallback, setRawFallback] = useState<string | null>(null);
-
-  // always-visible small log so you can debug on phone
-  const [log, setLog] = useState<string[]>([]);
-  const appendLog = (msg: string) =>
-    setLog((prev) => [...prev, `${new Date().toLocaleTimeString()}  ${msg}`].slice(-20));
+export default function HomePage() {
+  const [prompt, setPrompt] = useState("");
+  const [html, setHtml] = useState<string>("");
+  const [slug, setSlug] = useState<string>("");
+  const [err, setErr] = useState<string>("");
+  const [log, setLog] = useState<string>("");
 
   async function handleGenerate() {
-    setBusy(true);
-    setUiError(null);
-    setRawFallback(null);
+    setErr("");
     setHtml("");
     setSlug("");
-    setLog([]);
+    setLog("");
 
+    const url = `/api/generate?v=${Date.now()}`;
     try {
-      appendLog("POST /api/generate …");
-      const res = await fetch(`/api/generate`, {
+      const res = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        // send both `prompt` and `q` just in case server expects either
-        body: JSON.stringify({ prompt: input, q: input }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
       });
 
-      const contentType = res.headers.get("content-type") || "unknown";
-      const text = await res.text();
-      appendLog(`status ${res.status} ${res.ok ? "OK" : "ERR"} | ${contentType} | ${text.length} bytes`);
+      // Minimal network debug (shows up on the page)
+      const ct = res.headers.get("content-type") || "";
+      const sz = res.headers.get("content-length") || "";
+      setLog(
+        `request: POST ${url}\nstatus: ${res.status}\ncontent-type: ${ct}\ncontent-length: ${sz}`
+      );
 
-      // If it’s not JSON, show the body so it doesn’t look blank
-      if (!contentType.toLowerCase().includes("application/json")) {
-        setUiError(`Non-JSON from /api/generate (HTTP ${res.status})`);
-        setRawFallback(text.slice(0, 2000));
+      // If server didn’t return JSON, surface raw body
+      if (!ct.includes("application/json")) {
+        const raw = await res.text();
+        setErr(`Non-JSON response:\n${raw.slice(0, 2000)}`);
         return;
       }
 
-      let data: GenResult;
-      try {
-        data = JSON.parse(text);
-      } catch (e: any) {
-        setUiError(`JSON parse error from /api/generate`);
-        setRawFallback(text.slice(0, 2000));
+      const data: GenResult = await res.json();
+
+      if (data.error) {
+        setErr(data.error);
         return;
       }
-
-      if (!res.ok || data.error) {
-        setUiError(data.error ? String(data.error) : `HTTP ${res.status}`);
-        if (data.rawSnippet) setRawFallback(String(data.rawSnippet));
-        return;
-      }
-
-      const gotHtml = (data.html || "").toString();
-      const gotSlug = (data.slug || "").toString();
-
-      if (!gotHtml.trim()) {
-        setUiError("Empty HTML in response.");
-        if (data.rawSnippet) setRawFallback(String(data.rawSnippet));
-        return;
-      }
-
-      setHtml(gotHtml);
-      setSlug(gotSlug);
-      appendLog(`Rendered HTML (${gotHtml.length} chars)`);
+      setHtml(data.html || "");
+      setSlug(data.slug || "");
     } catch (e: any) {
-      setUiError(`Request failed: ${String(e?.message || e)}`);
-    } finally {
-      setBusy(false);
+      setErr(`Network error: ${e?.message || String(e)}`);
     }
   }
 
   async function handleSave() {
+    setErr("");
     if (!html) return;
-    setBusy(true);
-    setUiError(null);
 
     try {
-      appendLog("POST /api/save …");
-      const res = await fetch(`/api/save`, {
+      const res = await fetch(`/api/save?v=${Date.now()}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ html, slug }),
       });
 
-      const ct = res.headers.get("content-type") || "unknown";
-      const t = await res.text();
-      appendLog(`save status ${res.status} | ${ct} | ${t.length} bytes`);
+      const ct = res.headers.get("content-type") || "";
+      const sz = res.headers.get("content-length") || "";
+      setLog(
+        (prev) =>
+          prev +
+          `\n\nrequest: POST /api/save\nstatus: ${res.status}\ncontent-type: ${ct}\ncontent-length: ${sz}`
+      );
 
-      if (!ct.toLowerCase().includes("application/json")) {
-        setUiError(`Non-JSON from /api/save (HTTP ${res.status})`);
-        setRawFallback(t.slice(0, 2000));
+      if (!ct.includes("application/json")) {
+        const raw = await res.text();
+        setErr(`Save returned non-JSON:\n${raw.slice(0, 2000)}`);
         return;
       }
 
-      let data: any;
-      try {
-        data = JSON.parse(t);
-      } catch {
-        setUiError("JSON parse error from /api/save.");
-        setRawFallback(t.slice(0, 2000));
+      const data = await res.json();
+      if (data.error) {
+        setErr(data.error);
         return;
       }
-
-      if (!res.ok || data?.error) {
-        setUiError(`Save failed: ${data?.error || `HTTP ${res.status}`}`);
-        return;
-      }
-
-      const url: string | undefined = data?.url || data?.htmlUrl || data?.view;
-      if (url) {
-        window.location.href = url;
-      } else {
-        setUiError("Save succeeded but no URL was returned by /api/save.");
-      }
+      // Optionally navigate: window.location.href = `/archive/${slug}`;
     } catch (e: any) {
-      setUiError(`Save request failed: ${String(e?.message || e)}`);
-    } finally {
-      setBusy(false);
+      setErr(`Save error: ${e?.message || String(e)}`);
     }
   }
 
   return (
-    <main style={{ maxWidth: 900, margin: "0 auto", padding: 24 }}>
+    <main style={{ maxWidth: 900, margin: "24px auto", padding: 16 }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ fontSize: 36, fontWeight: 800, letterSpacing: -0.5 }}>Fresh Recipes</h1>
+        <h1 style={{ fontSize: 40, margin: 0 }}>Fresh Recipes</h1>
         <a
           href="/archive"
-          style={{ border: "1px solid #ddd", padding: "10px 14px", borderRadius: 10, textDecoration: "none" }}
+          style={{
+            padding: "10px 14px",
+            border: "1px solid #ddd",
+            borderRadius: 10,
+            textDecoration: "none",
+            background: "#fff",
+          }}
         >
           Open Archive
         </a>
       </header>
 
-      <section style={{ border: "1px solid #eee", padding: 16, borderRadius: 16, marginTop: 12 }}>
-        <h2 style={{ fontSize: 22, marginBottom: 10 }}>What should we fetch &amp; render?</h2>
+      {/* tiny build stamp so you can confirm updates */}
+      <div style={{ color: "#888", fontSize: 12, marginTop: 6 }}>
+        build: {new Date().toISOString().slice(11, 19)}
+      </div>
+
+      <section
+        style={{
+          border: "1px solid #eee",
+          borderRadius: 16,
+          padding: 16,
+          marginTop: 20,
+          background: "#fafafa",
+        }}
+      >
+        <label style={{ fontWeight: 700, fontSize: 20 }}>
+          What should we fetch &amp; render?
+        </label>
         <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
           rows={4}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="e.g., 3 homemade ice cream recipes with step photos"
+          placeholder="e.g. 3 iconic homemade ice cream recipes with step photos"
           style={{
             width: "100%",
-            border: "1px solid #ddd",
-            borderRadius: 12,
+            marginTop: 12,
             padding: 12,
+            borderRadius: 12,
+            border: "1px solid #ddd",
             fontSize: 18,
-            outline: "none",
           }}
         />
+
         <div style={{ display: "flex", gap: 16, marginTop: 16 }}>
           <button
             onClick={handleGenerate}
-            disabled={busy || !input.trim()}
             style={{
-              background: "#2563eb",
-              color: "white",
-              border: "none",
-              borderRadius: 14,
               padding: "16px 20px",
+              background: "#1e63ff",
+              color: "#fff",
+              border: 0,
+              borderRadius: 12,
               fontSize: 20,
               fontWeight: 700,
-              opacity: busy || !input.trim() ? 0.6 : 1,
             }}
           >
-            {busy ? "Working…" : "Generate HTML"}
+            Generate HTML
           </button>
 
           <button
             onClick={handleSave}
-            disabled={busy || !html}
+            disabled={!html}
             style={{
-              background: "white",
+              padding: "16px 20px",
+              background: html ? "#fff" : "#f3f3f3",
               color: "#111",
               border: "1px solid #ddd",
-              borderRadius: 14,
-              padding: "16px 20px",
+              borderRadius: 12,
               fontSize: 20,
               fontWeight: 700,
-              opacity: busy || !html ? 0.5 : 1,
+              opacity: html ? 1 : 0.6,
             }}
           >
             Save to Archive
           </button>
         </div>
 
-        {/* Inline network log for phone debugging */}
-        <details open style={{ marginTop: 12 }}>
-          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Network log</summary>
+        {/* inline debug */}
+        {log && (
           <pre
             style={{
-              background: "#f8fafc",
-              border: "1px solid #e5e7eb",
-              borderRadius: 8,
-              padding: 10,
-              fontSize: 12,
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              maxHeight: 160,
-              overflow: "auto",
-            }}
-          >
-            {log.join("\n") || "—"}
-          </pre>
-        </details>
-
-        {uiError && (
-          <div
-            style={{
-              color: "#b91c1c",
-              background: "#fee2e2",
-              border: "1px solid #fecaca",
-              borderRadius: 12,
-              padding: 10,
               marginTop: 12,
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
               whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
+              background: "#f7f7ff",
+              border: "1px dashed #cbd5ff",
+              padding: 10,
+              borderRadius: 10,
+              fontSize: 12,
             }}
           >
-            {uiError}
-          </div>
+            {log}
+          </pre>
         )}
-        {rawFallback && (
-          <details style={{ marginTop: 8 }}>
-            <summary style={{ cursor: "pointer" }}>Show raw response (first 2KB)</summary>
-            <pre
-              style={{
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                background: "#fff7ed",
-                border: "1px solid #fed7aa",
-                borderRadius: 8,
-                padding: 10,
-                fontSize: 12,
-              }}
-            >
-              {rawFallback}
-            </pre>
-          </details>
+
+        {err && (
+          <div style={{ color: "#c00", marginTop: 12, fontFamily: "ui-monospace, monospace" }}>
+            {JSON.stringify({ error: err })}
+          </div>
         )}
       </section>
 
-      <section style={{ marginTop: 20 }}>
-        <details open>
-          <summary style={{ fontSize: 22, fontWeight: 700 }}>Preview (inline)</summary>
-          <div style={{ border: "1px solid #eee", borderRadius: 12, marginTop: 10, padding: 4, minHeight: 200 }}>
-            {html ? (
-              <iframe
-                title="preview"
-                sandbox="allow-same-origin allow-popups allow-forms"
-                style={{ width: "100%", height: "75vh", border: "none", borderRadius: 10 }}
-                srcDoc={html}
-              />
-            ) : (
-              <div style={{ color: "#666", padding: 16, fontStyle: "italic" }}>Nothing to show yet.</div>
-            )}
-          </div>
-        </details>
-      </section>
+      {/* Preview */}
+      <details open style={{ marginTop: 20 }}>
+        <summary style={{ fontSize: 20, fontWeight: 800 }}>Preview (inline)</summary>
+        <div
+          style={{
+            border: "1px solid #eee",
+            borderRadius: 16,
+            padding: 10,
+            marginTop: 10,
+            minHeight: 200,
+            background: "#fff",
+          }}
+        >
+          {html ? (
+            <iframe
+              title="preview"
+              sandbox="allow-scripts allow-same-origin"
+              referrerPolicy="no-referrer"
+              style={{ width: "100%", height: 800, border: 0, borderRadius: 12 }}
+              srcDoc={html}
+            />
+          ) : (
+            <div style={{ color: "#999" }}>No content yet.</div>
+          )}
+        </div>
+      </details>
     </main>
   );
 }
