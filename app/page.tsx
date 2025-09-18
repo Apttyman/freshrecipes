@@ -1,12 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { rewriteImages } from "./lib/html-tools";
+import { rewriteImages } from "@/app/lib/html-tools";
 
 type GenResult = {
   html?: string;
   slug?: string;
-  // optional debug/log
   log?: string;
 };
 
@@ -31,8 +30,7 @@ export default function HomePage() {
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        // keep the original contract; do not change API shape
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt })
       });
       if (!res.ok) {
         const text = await res.text();
