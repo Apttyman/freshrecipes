@@ -1,25 +1,24 @@
-// app/page.tsx
 "use client";
 
 import { useState } from "react";
-
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+import { rewriteImages } from "./lib/html-tools";
 
 type GenResult = {
   html?: string;
   slug?: string;
-  error?: string;
+  // optional debug/log
+  log?: string;
 };
 
 export default function HomePage() {
   const [prompt, setPrompt] = useState("");
-  const [result, setResult] = useState<GenResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [log, setLog] = useState<string>("");
+  const [result, setResult] = useState<GenResult | null>(null);
+  const [log, setLog] = useState("");
+  const [toast, setToast] = useState<string>("");
 
   function appendLog(line: string) {
-    setLog((prev) => (prev ? prev + "\n" + line : line));
+    setLog((s) => (s ? `${s}\n${line}` : line));
   }
 
   async function handleGenerate() {
@@ -32,115 +31,138 @@ export default function HomePage() {
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
+        // keep the original contract; do not change API shape
         body: JSON.stringify({ prompt }),
       });
-
-      appendLog(`status: ${res.status} ${res.statusText}`);
-      const ctype = res.headers.get("content-type") || "";
-      appendLog(`content-type: ${ctype}`);
-
-      if (ctype.includes("application/json")) {
-        const data = (await res.json()) as GenResult;
-        if (data.error) {
-          setResult({ error: data.error });
-          appendLog(`error: ${data.error}`);
-          return;
-        }
-        setResult({ html: data.html ?? "", slug: data.slug });
-        appendLog(`ok: ${data.html?.length || 0} bytes`);
-      } else {
+      if (!res.ok) {
         const text = await res.text();
-        appendLog(`raw: ${text.slice(0, 200)}…`);
-        setResult({ error: "Unexpected non-JSON response" });
+        appendLog(`✖ ${res.status} ${res.statusText}\n${text}`);
+        throw new Error(res.statusText);
       }
-    } catch (err: any) {
-      appendLog(`threw: ${String(err)}`);
-      setResult({ error: String(err) });
+      const data = (await res.json()) as GenResult;
+      const safeHtml = data.html ? rewriteImages(data.html) : "";
+      setResult({ ...data, html: safeHtml });
+      appendLog("✓ Done");
+    } catch (e: any) {
+      appendLog(`✖ Error: ${e?.message ?? "unknown"}`);
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleSave() {
-    if (!result?.html) {
-      appendLog("No HTML to save");
+  function showToast(msg: string) {
+    setToast(msg);
+    window.setTimeout(() => setToast(""), 1400);
+  }
+
+  function copyFrom(selector: string) {
+    const el = document.querySelector(selector);
+    if (!el) return;
+    const text = el.textContent?.trim() ?? "";
+    if (!text) return;
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => showToast("Copied"));
       return;
     }
-    try {
-      const url = `${window.location.origin}/api/save?_=${Date.now()}`;
-      appendLog(`→ POST ${url}`);
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          html: result.html,
-          title: prompt.trim().slice(0, 60) || "Recipe",
-        }),
-      });
-      appendLog(`status: ${res.status} ${res.statusText}`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        appendLog(`save error: ${JSON.stringify(data)}`);
-        return;
-      }
-      const viewUrl =
-        data?.viewUrl ||
-        data?.url ||
-        (data?.slug ? `/archive/${encodeURIComponent(data.slug)}` : null);
-      if (viewUrl) {
-        window.location.href = viewUrl;
-      } else {
-        appendLog("Save succeeded but no URL returned");
-      }
-    } catch (err: any) {
-      appendLog(`save threw: ${String(err)}`);
-    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    showToast("Copied");
   }
 
   return (
-    <main style={{ maxWidth: 900, margin: "24px auto", padding: "0 16px" }}>
-      <h1>Fresh Recipes</h1>
+    <div className="container">
+      <header className="py-8">
+        <h1 className="text-3xl font-semibold">FreshRecipes</h1>
+        <p className="text-slate-600">
+          Type a natural-language request. We’ll fetch and format it.
+        </p>
+      </header>
 
-      <textarea
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        rows={4}
-        placeholder="Type your recipe request…"
-        style={{ width: "100%", marginBottom: 12 }}
-      />
+      <div className="max-w-3xl mx-auto space-y-6">
+        <div className="space-y-2">
+          <textarea
+            aria-label="Recipe request"
+            className="w-full rounded-lg border p-4 min-h-[140px]"
+            placeholder="e.g., 3 Peruvian chicken recipes from named chefs; include ingredients and steps"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+          />
+          <div className="flex gap-2">
+            <button
+              className="btn"
+              onClick={handleGenerate}
+              disabled={loading || !prompt.trim()}
+            >
+              {loading ? "Generating…" : "Generate"}
+            </button>
+            {result?.html ? (
+              <>
+                <button
+                  className="btn"
+                  onClick={() => copyFrom("#recipe-html")}
+                  aria-label="Copy all visible recipe text"
+                >
+                  Copy all
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    const w = window.open(
+                      "",
+                      "_blank",
+                      "noopener,noreferrer,width=900,height=800"
+                    );
+                    if (!w || !result?.html) return;
+                    w.document.write(
+                      `<!doctype html><html><head><meta charset="utf-8"><title>Print recipes</title></head><body>${result.html}</body></html>`
+                    );
+                    w.document.close();
+                    w.focus();
+                    w.print();
+                  }}
+                >
+                  Print
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
 
-      <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
-        <button onClick={handleGenerate} disabled={loading || !prompt.trim()}>
-          {loading ? "Generating…" : "Generate HTML"}
-        </button>
-        <button onClick={handleSave} disabled={!result?.html}>
-          Save to Archive
-        </button>
+        {result?.html ? (
+          <section aria-labelledby="preview" className="card p-4">
+            <h2 id="preview" className="text-xl font-semibold mb-2">
+              Preview
+            </h2>
+            <div id="recipe-html" dangerouslySetInnerHTML={{ __html: result.html }} />
+          </section>
+        ) : null}
+
+        <details className="card p-4">
+          <summary className="font-semibold cursor-pointer">Request log</summary>
+          <pre className="text-sm whitespace-pre-wrap mt-2">{log}</pre>
+        </details>
       </div>
 
-      <pre
-        style={{
-          background: "#111",
-          color: "#eee",
-          padding: 12,
-          borderRadius: 8,
-          whiteSpace: "pre-wrap",
-          marginBottom: 12,
-          maxHeight: 200,
-          overflow: "auto",
-        }}
+      <button
+        aria-label="Back to top"
+        className="fixed right-4 bottom-4 btn"
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
       >
-        {log || "Logs will appear here…"}
-      </pre>
+        ↑ Top
+      </button>
 
-      {result?.error ? (
-        <div style={{ color: "red" }}>{result.error}</div>
-      ) : result?.html ? (
-        <iframe
-          srcDoc={result.html}
-          style={{ width: "100%", minHeight: 600, border: "1px solid #ccc" }}
-        />
-      ) : null}
-    </main>
+      <div
+        role="status"
+        aria-atomic="true"
+        aria-live="polite"
+        className={`toast ${toast ? "show" : ""}`}
+      >
+        {toast}
+      </div>
+    </div>
   );
 }
