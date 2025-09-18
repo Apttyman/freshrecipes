@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - package.json
+      - "package.json"
 
 permissions:
   contents: write
@@ -12,18 +12,31 @@ permissions:
 jobs:
   lockfile:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Setup Node
+      - name: Use Node 18 (matches Vercel)
         uses: actions/setup-node@v4
         with:
-          node-version: '18'   # matches Vercel
-          cache: 'npm'
+          node-version: "18.18.0"
+          cache: "npm"
 
-      - name: Install deps (create lockfile)
+      - name: Clean slate
+        run: |
+          rm -rf node_modules package-lock.json
+
+      # Full install to resolve + generate a correct lockfile (better than --package-lock-only)
+      - name: Install deps (creates package-lock.json)
         run: npm install
+
+      # Optional: run a build once to patch SWC native deps the way Next expects
+      - name: Build (patch swc in lockfile)
+        run: npm run build || true
 
       - name: Commit lockfile if changed
         run: |
@@ -31,8 +44,13 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add package-lock.json
-            git commit -m "chore: add/update package-lock.json (auto)"
-            git push
+            git commit -m "chore(lockfile): regenerate package-lock.json via CI"
           else
             echo "No changes to package-lock.json"
           fi
+
+      - name: Push
+        uses: ad-m/github-push-action@v0.8.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
