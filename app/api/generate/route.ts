@@ -1,31 +1,27 @@
 // app/api/generate/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
+import { promises as fs } from "fs";
+import path from "path";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const MODEL = "gpt-4o-mini";
-
-async function loadSystemPrompt(): Promise<string> {
-  const p = path.join(process.cwd(), "app", "prompt", "system-prompt.txt");
-  try {
-    return await readFile(p, "utf8");
-  } catch {
-    return "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>.";
-  }
-}
+const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const PROMPT_PATH = path.join(process.cwd(), "app", "prompt", "system-prompt.txt");
 
 export async function POST(req: NextRequest) {
   try {
-    // prompt from body or ?q=
-    let b: any = undefined;
-    try { b = await req.json(); } catch { /* ignore */ }
-    const userPrompt =
-      String(b?.prompt ?? b?.query ?? b?.text ?? req.nextUrl.searchParams.get("q") ?? "")
-        .trim();
+    // 1) read user prompt (body or ?q=)
+    let bodyPrompt: string | undefined;
+    try {
+      const body = (await req.json()) as any;
+      bodyPrompt = (body?.prompt ?? body?.query ?? body?.text)?.toString();
+    } catch {
+      /* body may be empty */
+    }
+    const queryPrompt = req.nextUrl.searchParams.get("q") ?? undefined;
+    const userPrompt = (bodyPrompt ?? queryPrompt ?? "").trim();
 
     if (!userPrompt) {
       return NextResponse.json(
@@ -34,15 +30,35 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 2) ensure key
     if (!process.env.OPENAI_API_KEY) {
       const msg =
-        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set.</p></body></html>";
-      return NextResponse.json({ html: msg, slug: slugify(userPrompt), rawSnippet: msg.slice(0, 280) }, { status: 200 });
+        "<!doctype html><html><body><p style='font:14px/1.4 ui-sans-serif,system-ui'>OPENAI_API_KEY is not set in Vercel → Project → Settings → Environment Variables.</p></body></html>";
+      return NextResponse.json(
+        { html: msg, slug: slugify(userPrompt), rawSnippet: msg },
+        { status: 200 }
+      );
     }
 
-    const systemPrompt = await loadSystemPrompt();
+    // 3) load system prompt from file
+    let systemPrompt = "";
+    try {
+      systemPrompt = await fs.readFile(PROMPT_PATH, "utf8");
+    } catch (e) {
+      return NextResponse.json(
+        {
+          error: `system-prompt.txt not found at ${PROMPT_PATH}`,
+          html: "",
+          slug: slugify(userPrompt),
+          rawSnippet: "",
+        },
+        { status: 500 }
+      );
+    }
+
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+    // 4) call OpenAI
     const { choices } = await client.chat.completions.create({
       model: MODEL,
       temperature: 0.7,
@@ -52,31 +68,38 @@ export async function POST(req: NextRequest) {
       ],
     });
 
-    const raw = (choices?.[0]?.message?.content ?? "").trim();
-    const pure = toPureHtml(raw);
-    const hardened = addNoReferrer(pure);
+    const raw = (choices?.[0]?.message?.content ?? "").toString().trim();
+    const rawSnippet = raw.slice(0, 1200);
 
-    // If we somehow got nothing, surface a readable error & a snippet
-    if (!hardened || !hardened.trim()) {
+    // 5) normalize to pure HTML
+    const html = toPureHtml(raw);
+
+    if (!html.trim()) {
+      // Always send something the UI can show in the red debug box
       return NextResponse.json(
         {
-          error: "Model returned empty HTML",
+          error: "Model returned no HTML (after normalization).",
           html: "",
           slug: slugify(userPrompt),
-          rawSnippet: raw.slice(0, 500),
+          rawSnippet,
         },
-        { status: 502 }
+        { status: 200 }
       );
     }
 
     return NextResponse.json(
-      { html: hardened, slug: slugify(userPrompt), rawSnippet: raw.slice(0, 200) },
+      { html, slug: slugify(userPrompt), rawSnippet },
       { status: 200 }
     );
   } catch (err: any) {
-    console.error("Generate API error:", err);
+    // Surface full error in a field the UI shows on phone
     return NextResponse.json(
-      { error: String(err?.message || err || "Generation failed"), html: "", slug: "", rawSnippet: "" },
+      {
+        error: `Generation failed: ${String(err)}`,
+        html: "",
+        slug: "",
+        rawSnippet: "",
+      },
       { status: 500 }
     );
   }
@@ -87,43 +110,23 @@ export async function POST(req: NextRequest) {
 function toPureHtml(s: string): string {
   let out = (s ?? "").trim();
 
-  // If the model returned JSON like: { "html": "<html>...</html>" }
+  // JSON shape: { "html": "<html>...</html>" }
   if (out.startsWith("{")) {
     try {
       const j = JSON.parse(out);
-      if (j && typeof j.html === "string") out = j.html;
-    } catch { /* ignore */ }
-  }
-
-  // Strip fenced code blocks: ```html ... ``` or ``` ... ```
-  const mHtml = out.match(/^```html\s*([\s\S]*?)\s*```$/i);
-  if (mHtml) return mHtml[1].trim();
-  const mAny = out.match(/^```\s*([\s\S]*?)\s*```$/);
-  if (mAny) return mAny[1].trim();
-
-  return out;
-}
-
-function addNoReferrer(html: string): string {
-  let out = html || "";
-
-  const meta = `<meta name="referrer" content="no-referrer">`;
-  if (/<head[^>]*>/i.test(out)) {
-    if (!/name=["']referrer["']/i.test(out)) {
-      out = out.replace(/<head[^>]*>/i, (m) => `${m}\n${meta}`);
+      if (j && typeof j.html === "string") return j.html.trim();
+    } catch {
+      /* ignore */
     }
-  } else if (/<html[^>]*>/i.test(out)) {
-    out = out.replace(/<html[^>]*>/i, (m) => `${m}\n<head>\n${meta}\n</head>`);
-  } else {
-    out = `<head>\n${meta}\n</head>\n` + out;
   }
 
-  out = out.replace(/<img\b[^>]*>/gi, (tag) => {
-    let t = tag
-      .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
-      .replace(/\scrossorigin\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-    return t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
-  });
+  // ```html ... ```
+  const fencedHtml = out.match(/^```html\s*([\s\S]*?)\s*```$/i);
+  if (fencedHtml) return fencedHtml[1].trim();
+
+  // ``` ... ```
+  const fencedAny = out.match(/^```\s*([\s\S]*?)\s*```$/);
+  if (fencedAny) return fencedAny[1].trim();
 
   return out;
 }
