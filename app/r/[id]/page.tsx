@@ -1,11 +1,21 @@
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
-export const runtime = "edge"; // fast public renderer
+export const runtime = "edge";
+
+function buildOrigin() {
+  const h = headers();
+  const proto = h.get("x-forwarded-proto") || "https";
+  const host = h.get("x-forwarded-host") || h.get("host");
+  return `${proto}://${host}`;
+}
 
 async function fetchItem(id: string) {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ""}/api/archive/get?id=${id}`, {
-    // On Vercel, absolute isn't required, but NEXT_PUBLIC_BASE_URL makes local dev easy.
+  const origin = buildOrigin();
+  const res = await fetch(`${origin}/api/archive/get?id=${id}`, {
     cache: "no-store",
+    // Explicit pass-through to avoid caching layers on edge
+    headers: { "accept": "application/json" },
   });
   if (!res.ok) return null;
   return (await res.json()) as { html: string; title: string; description: string };
@@ -16,6 +26,7 @@ export default async function SavedPage({ params, searchParams }: any) {
   const item = await fetchItem(id);
   if (!item) return notFound();
   const autoPrint = searchParams?.print === "1";
+
   return (
     <html lang="en">
       <head>
