@@ -11,14 +11,13 @@ import {
   ensureAtLeastOneImage,
   addNoReferrer,
   rewriteImagesWithCloudinary,
-} from "@/app/lib/html-tools";
+} from "../../lib/html-tools"; // ⬅️ relative import
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 const MODEL = "gpt-4o-mini";
 
 async function readSystemPrompt(): Promise<string> {
-  // Resolve /app/prompt/system-prompt.txt relative to this file
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const promptPath = path.join(__dirname, "..", "..", "prompt", "system-prompt.txt");
@@ -26,14 +25,12 @@ async function readSystemPrompt(): Promise<string> {
     const buf = await fs.readFile(promptPath, "utf8");
     return buf.toString();
   } catch {
-    // Fallback minimal guard if file missing
     return "Return a complete standalone HTML5 document only (<html>…</html>) with inline <style>. Include at least one <img> with an absolute HTTPS src. Do not include Markdown fences or JSON.";
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // Accept prompt from body or query to be backward-compatible
     let promptFromBody: string | undefined;
     try {
       const body = (await req.json()) as any;
@@ -71,12 +68,9 @@ export async function POST(req: NextRequest) {
 
     const raw = (choices[0]?.message?.content ?? "").trim();
 
-    // Post-processing pipeline
     const pure = toPureHtml(raw);
     const withImage = ensureAtLeastOneImage(pure);
     const htmlNoRef = addNoReferrer(withImage);
-
-    // Re-host images through Cloudinary fetch (no secret required)
     const html = rewriteImagesWithCloudinary(htmlNoRef);
 
     return NextResponse.json({ html, slug: slugify(userPrompt) }, { status: 200 });
