@@ -36,7 +36,7 @@ export default function HomePage() {
         body: JSON.stringify({ query: prompt, prompt }), // server accepts either key
       });
 
-      const text = await res.text(); // <— INSIDE async fn
+      const text = await res.text();
       if (!res.ok) {
         appendLog(`✖ ${res.status} ${res.statusText}\n${text || "(no body)"}`);
         throw new Error(res.statusText);
@@ -44,8 +44,9 @@ export default function HomePage() {
 
       const data: GenResult = text ? JSON.parse(text) : {};
       const raw = data.html || "";
-      const safe = rewriteImages(raw);
-      const pretty = ensureCardsWithoutLosingContent(safe);
+      // Normalize + basic image fixes (no prompt changes)
+      const normalized = rewriteImages(raw);
+      const pretty = toRecipeCards(normalized);
       setResultHtml(pretty);
       appendLog("✓ Done");
     } catch (e: any) {
@@ -114,13 +115,14 @@ export default function HomePage() {
     window.open(`/r/${id}`, "_blank", "noopener,noreferrer");
   }
 
+  // One Save button per RECIPE (per <article>)
   function onSaveHighlightClick(e: Event) {
     const btn = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>(
       "[data-save-highlight]"
     );
     if (!btn) return;
     e.preventDefault();
-    const card = btn.closest<HTMLElement>("article");
+    const card = btn.closest<HTMLElement>("article.recipe-card");
     if (!card) return;
     void saveCard(card);
   }
@@ -211,7 +213,6 @@ export default function HomePage() {
             <div
               id="recipe-html"
               className="recipe-surface"
-              // HTML is already beautified & safe, do not mutate on the fly
               dangerouslySetInnerHTML={{ __html: resultHtml }}
             />
           </section>
@@ -243,7 +244,7 @@ export default function HomePage() {
   );
 }
 
-/* ----------- SAFE VISUAL WRAPPER (no content loss) ----------- */
+/* ----------- VISUAL WRAPPER (one Save per recipe) ----------- */
 
 function makeWholeTitle(html: string): string | null {
   const m =
@@ -258,51 +259,119 @@ function stripTags(s: string) {
 }
 
 /**
- * If there are <article> cards, just add Save buttons.
- * Else, keep all content and wrap into cards by <h2> sections,
- * or a single card if no <h2> exists.
+ * Build proper recipe cards:
+ * - If <article> already exists → wrap with required classes & add exactly one Save button per article.
+ * - Else → start a new card at each H2; collect all siblings until the next H2.
+ * - Never drop content. Images get classes from rewriteImages().
  */
-function ensureCardsWithoutLosingContent(html: string): string {
-  const toolbar = `
-    <div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-      <button class="btn" data-save-highlight aria-label="Save this recipe highlight">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M6 4h12a2 2 0 0 1 2 2v13l-8-4-8 4V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="2" fill="none"/>
-        </svg>
-        Save highlight
-      </button>
-    </div>`;
+function toRecipeCards(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const body = doc.body;
 
-  // Already carded? just add buttons
-  if (/<article\b/i.test(html)) {
-    return html.replace(/<\/article>/gi, `${toolbar}</article>`);
+    const addSaveButton = (root: Element) => {
+      if (root.querySelector("[data-save-highlight]")) return;
+      const toolbar = doc.createElement("div");
+      toolbar.className = "btns";
+      toolbar.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;margin-top:8px";
+      toolbar.innerHTML = `
+        <button class="btn" data-save-highlight aria-label="Save this recipe highlight">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M6 4h12a2 2 0 0 1 2 2v13l-8-4-8 4V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="2" fill="none"/>
+          </svg>
+          Save highlight
+        </button>`;
+      root.appendChild(toolbar);
+    };
+
+    // If author already returned <article> cards, respect them.
+    const existing = body.querySelectorAll("article");
+    if (existing.length) {
+      existing.forEach((a) => {
+        a.classList.add("recipe-card");
+        if (!a.querySelector(".recipe-body")) {
+          const inner = doc.createElement("div");
+          inner.className = "recipe-body";
+          // move children into body
+          while (a.firstChild) inner.appendChild(a.firstChild);
+          a.appendChild(inner);
+        }
+        addSaveButton(a);
+      });
+
+      // Wrap in grid if not already
+      if (!body.querySelector(".recipe-grid")) {
+        const grid = doc.createElement("div");
+        grid.className = "recipe-grid";
+        existing.forEach((a) => grid.appendChild(a));
+        body.innerHTML = "";
+        // Keep an optional h1 above the grid
+        const h1 = doc.querySelector("h1");
+        const page = doc.createElement("div");
+        page.className = "recipe-page";
+        if (h1) {
+          page.appendChild(h1);
+        }
+        page.appendChild(grid);
+        body.appendChild(page);
+      }
+      return body.innerHTML;
+    }
+
+    // Otherwise, carve the body into cards by H2 boundaries
+    const h2s = Array.from(body.querySelectorAll("h2"));
+    if (h2s.length) {
+      const page = doc.createElement("div");
+      page.className = "recipe-page";
+      const title = body.querySelector("h1");
+      if (title) page.appendChild(title);
+
+      const grid = doc.createElement("div");
+      grid.className = "recipe-grid";
+
+      h2s.forEach((h, i) => {
+        const card = doc.createElement("article");
+        card.className = "recipe-card";
+        const bodyDiv = doc.createElement("div");
+        bodyDiv.className = "recipe-body";
+
+        // collect nodes from this H2 inclusive up to but NOT including the next H2
+        let node: ChildNode | null = h;
+        while (node) {
+          const next = node.nextSibling;
+          bodyDiv.appendChild(node);
+          if (next && (next as Element).matches?.("h2")) break;
+          node = next;
+        }
+        card.appendChild(bodyDiv);
+        addSaveButton(card);
+        grid.appendChild(card);
+      });
+
+      page.appendChild(grid);
+      body.innerHTML = "";
+      body.appendChild(page);
+      return body.innerHTML;
+    }
+
+    // Fallback: single card with everything
+    const card = doc.createElement("article");
+    card.className = "recipe-card";
+    const inner = doc.createElement("div");
+    inner.className = "recipe-body";
+    while (body.firstChild) inner.appendChild(body.firstChild);
+    card.appendChild(inner);
+    addSaveButton(card);
+    body.appendChild(card);
+    return body.innerHTML;
+  } catch {
+    // worst-case fallback: just wrap raw HTML once and add one Save
+    return `<div class="recipe-page"><div class="recipe-grid">
+      <article class="recipe-card"><div class="recipe-body">${html}</div>
+        <div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn" data-save-highlight aria-label="Save this recipe highlight">Save highlight</button>
+        </div>
+      </article>
+    </div></div>`;
   }
-
-  // Optional title extraction
-  let header = "";
-  const h1Match = html.match(/<h1[^>]*>[\s\S]*?<\/h1>/i);
-  if (h1Match) {
-    header = h1Match[0];
-    html = html.replace(h1Match[0], "");
-  }
-
-  // Split on H2 sections
-  const parts = html
-    .split(/(?=<h2\b[^>]*>)/i)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const makeCard = (content: string) =>
-    `<article class="recipe-card"><div class="recipe-body">${content}</div>${toolbar}</article>`;
-
-  if (parts.length > 1) {
-    return `<div class="recipe-page">${header}<div class="recipe-grid">${parts
-      .map(makeCard)
-      .join("")}</div></div>`;
-  }
-
-  // Single card fallback
-  return `<div class="recipe-page">${header}<div class="recipe-grid">${makeCard(
-    html
-  )}</div></div>`;
 }
