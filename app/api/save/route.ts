@@ -2,106 +2,98 @@
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type SaveBody = {
   slug?: string;
   html?: string;
-  meta?: { prompt?: string } | null;
+  meta?: Record<string, any>;
 };
+
+function slugify(s: string) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 export async function POST(req: NextRequest) {
   try {
-    const token = process.env.BLOB_READ_WRITE_TOKEN;
-    if (!token) {
+    let body: SaveBody;
+    try {
+      body = (await req.json()) as SaveBody;
+    } catch {
       return NextResponse.json(
-        { error: "Missing BLOB_READ_WRITE_TOKEN in env" },
-        { status: 500 }
+        { error: "Invalid JSON body" },
+        { status: 400 }
       );
     }
 
-    const body = (await req.json()) as SaveBody;
-    const slug = (body.slug || "recipe").toLowerCase().replace(/[^a-z0-9-_]+/g, "-");
-    const htmlInput = String(body.html || "");
+    const html = (body.html || "").trim();
+    if (!html) {
+      return NextResponse.json(
+        { error: "Missing html" },
+        { status: 400 }
+      );
+    }
 
-    // make sure IMG src uses our proxy before saving
-    const htmlForArchive = rewriteImagesToProxy(addNoReferrer(htmlInput));
+    // Prefer caller-provided slug, else derive from <title> or fallback.
+    let slug = slugify(
+      body.slug ||
+        (html.match(/<title>([^<]+)<\/title>/i)?.[1] ?? "") ||
+        "recipe"
+    );
+    if (!slug) slug = "recipe";
 
-    const ts = Date.now();
-    const htmlKey = `recipes/${slug}-${ts}.html`;
-    const jsonKey = `recipes/${slug}-${ts}.json`;
+    // Keys in Blob storage (public)
+    const htmlKey = `archive/${slug}/index.html`;
+    const jsonKey = `archive/${slug}/meta.json`;
 
-    // save HTML
-    const htmlPut = await put(htmlKey, htmlForArchive, {
-      token,
+    // Save HTML
+    await put(htmlKey, html, {
       access: "public",
+      addRandomSuffix: false, // keep a stable key for viewer route
       contentType: "text/html; charset=utf-8",
-      addRandomSuffix: false,
     });
 
-    // save JSON sidecar (useful for listing)
-    const jsonPut = await put(
-      jsonKey,
-      JSON.stringify(
-        {
-          slug,
-          createdAt: ts,
-          urlHtml: htmlPut.url,
-          prompt: body.meta?.prompt || null,
-        },
-        null,
-        2
-      ),
-      {
-        token,
-        access: "public",
-        contentType: "application/json; charset=utf-8",
-        addRandomSuffix: false,
-      }
-    );
+    // Save metadata (expand with whatever you need)
+    const record = {
+      slug,
+      savedAt: new Date().toISOString(),
+      bytes: Buffer.byteLength(html, "utf8"),
+      ...((body.meta as object) || {}),
+    };
+
+    await put(jsonKey, JSON.stringify(record, null, 2), {
+      access: "public",
+      addRandomSuffix: false,
+      contentType: "application/json",
+    });
+
+    // Build absolute viewer URL (works on Vercel preview & prod)
+    const host = req.headers.get("host") || req.nextUrl.host || "";
+    const proto =
+      req.headers.get("x-forwarded-proto") ||
+      (req.nextUrl.protocol ? req.nextUrl.protocol.replace(":", "") : "https");
+    const base = `${proto}://${host}`;
+    const pageUrl = `${base}/archive/${encodeURIComponent(slug)}`;
 
     return NextResponse.json(
-      { ok: true, slug, urlHtml: htmlPut.url, urlJson: jsonPut.url, htmlKey, jsonKey },
+      {
+        ok: true,
+        slug,
+        htmlKey,
+        jsonKey,
+        url: pageUrl,
+        pageUrl, // alias for older UI code
+      },
       { status: 200 }
     );
   } catch (err: any) {
-    return NextResponse.json({ error: String(err?.message || err) }, { status: 500 });
+    return NextResponse.json(
+      { error: String(err?.message || err) },
+      { status: 500 }
+    );
   }
-}
-
-/* --- minimal copies of helpers so this route is self-contained --- */
-
-function addNoReferrer(html: string): string {
-  let out = html || "";
-  const meta = `<meta name="referrer" content="no-referrer">`;
-  if (/<head[^>]*>/i.test(out)) {
-    if (!/name=["']referrer["']/i.test(out)) out = out.replace(/<head[^>]*>/i, (m) => `${m}\n${meta}`);
-  } else if (/<html[^>]*>/i.test(out)) {
-    out = out.replace(/<html[^>]*>/i, (m) => `${m}\n<head>\n${meta}\n</head>`);
-  } else {
-    out = `<head>\n${meta}\n</head>\n` + out;
-  }
-  out = out.replace(/<img\b[^>]*>/gi, (tag) => {
-    let t = tag
-      .replace(/\sreferrerpolicy\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
-      .replace(/\scrossorigin\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
-    t = t.replace(/\/?>$/, (m) => ` referrerpolicy="no-referrer" crossorigin="anonymous"${m}`);
-    return t.replace(/\s{2,}/g, " ");
-  });
-  return out;
-}
-
-function rewriteImagesToProxy(html: string): string {
-  return (html || "").replace(/<img\b([^>]*?)\bsrc\s*=\s*(['"])(.*?)\2/gi, (_m, pre, q, src) => {
-    try {
-      if (/^\/api\/img\?u=/.test(src) || /^data:/i.test(src)) return _m;
-      const abs = new URL(src, "https://placeholder.invalid/");
-      if (!/^https?:$/i.test(abs.protocol)) return _m;
-      const proxied = `/api/img?u=${encodeURIComponent(src)}`;
-      return `<img${pre}src=${q}${proxied}${q}`;
-    } catch {
-      return _m;
-    }
-  });
 }
