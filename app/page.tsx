@@ -1,13 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import Link from "next/link";
 import { rewriteImages } from "@/app/lib/html-tools";
 
-type GenResult = {
-  html?: string;
-  slug?: string;
-  log?: string;
-};
+type GenResult = { html?: string; slug?: string; log?: string };
 
 export default function HomePage() {
   const [prompt, setPrompt] = useState("");
@@ -18,6 +15,10 @@ export default function HomePage() {
 
   function appendLog(line: string) {
     setLog((s) => (s ? `${s}\n${line}` : line));
+  }
+  function showToast(msg: string) {
+    setToast(msg);
+    window.setTimeout(() => setToast(""), 1400);
   }
 
   async function handleGenerate() {
@@ -30,7 +31,8 @@ export default function HomePage() {
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt })
+        // Back-compat: send both keys so older API keeps working.
+        body: JSON.stringify({ query: prompt, prompt }),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -48,13 +50,63 @@ export default function HomePage() {
     }
   }
 
-  function showToast(msg: string) {
-    setToast(msg);
-    window.setTimeout(() => setToast(""), 1400);
+  // SAVE HELPERS
+  async function saveWhole() {
+    if (!result?.html) return;
+    const description = prompt.trim().slice(0, 200);
+    const payload = {
+      kind: "full" as const,
+      title: makeWholeTitle(result.html) ?? "Saved Recipes",
+      description: description || "Generated recipes",
+      html: result.html,
+    };
+    const r = await fetch("/api/archive/save", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      showToast("Save failed");
+      return;
+    }
+    const { id } = (await r.json()) as { id: string };
+    showToast("Saved");
+    window.open(`/r/${id}`, "_blank", "noopener,noreferrer");
   }
 
-  function copyFrom(selector: string) {
-    const el = document.querySelector(selector);
+  async function saveCard(article: HTMLElement) {
+    const title =
+      article.querySelector("h1,h2,h3,h4")?.textContent?.trim() ||
+      "Recipe Highlight";
+    const html = article.outerHTML;
+    const r = await fetch("/api/archive/save", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "highlight",
+        title,
+        description: title,
+        html,
+      }),
+    });
+    if (!r.ok) {
+      showToast("Save failed");
+      return;
+    }
+    const { id } = (await r.json()) as { id: string };
+    showToast("Saved");
+    window.open(`/r/${id}`, "_blank", "noopener,noreferrer");
+  }
+
+  function onSaveHighlightClick(e: React.MouseEvent<HTMLButtonElement>) {
+    const btn = e.currentTarget;
+    const card = btn.closest("article");
+    if (!card) return;
+    saveCard(card as HTMLElement);
+  }
+
+  function copyAll() {
+    const el = document.querySelector("#recipe-html");
     if (!el) return;
     const text = el.textContent?.trim() ?? "";
     if (!text) return;
@@ -71,13 +123,31 @@ export default function HomePage() {
     showToast("Copied");
   }
 
+  useEffect(() => {
+    // delegate clicks for per-card Save buttons rendered within result.html
+    function handler(ev: Event) {
+      const t = ev.target as HTMLElement;
+      if (t.closest("[data-save-highlight]")) {
+        ev.preventDefault();
+        onSaveHighlightClick(ev as unknown as React.MouseEvent<HTMLButtonElement>);
+      }
+    }
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, []);
+
   return (
     <div className="container">
       <header className="py-8">
-        <h1 className="text-3xl font-semibold">FreshRecipes</h1>
-        <p className="text-slate-600">
-          Type a natural-language request. We’ll fetch and format it.
-        </p>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-3xl font-semibold">FreshRecipes</h1>
+            <p className="text-slate-600">
+              Type a natural-language request. We’ll fetch and format it.
+            </p>
+          </div>
+          <Link href="/archive" className="btn">Open Archive</Link>
+        </div>
       </header>
 
       <div className="max-w-3xl mx-auto space-y-6">
@@ -89,7 +159,7 @@ export default function HomePage() {
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
           />
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button
               className="btn"
               onClick={handleGenerate}
@@ -99,31 +169,11 @@ export default function HomePage() {
             </button>
             {result?.html ? (
               <>
-                <button
-                  className="btn"
-                  onClick={() => copyFrom("#recipe-html")}
-                  aria-label="Copy all visible recipe text"
-                >
+                <button className="btn" onClick={copyAll} aria-label="Copy all">
                   Copy all
                 </button>
-                <button
-                  className="btn"
-                  onClick={() => {
-                    const w = window.open(
-                      "",
-                      "_blank",
-                      "noopener,noreferrer,width=900,height=800"
-                    );
-                    if (!w || !result?.html) return;
-                    w.document.write(
-                      `<!doctype html><html><head><meta charset="utf-8"><title>Print recipes</title></head><body>${result.html}</body></html>`
-                    );
-                    w.document.close();
-                    w.focus();
-                    w.print();
-                  }}
-                >
-                  Print
+                <button className="btn" onClick={saveWhole} aria-label="Save all to archive">
+                  Save all to archive
                 </button>
               </>
             ) : null}
@@ -135,7 +185,13 @@ export default function HomePage() {
             <h2 id="preview" className="text-xl font-semibold mb-2">
               Preview
             </h2>
-            <div id="recipe-html" dangerouslySetInnerHTML={{ __html: result.html }} />
+            {/* Inject a small button into each recipe card for "Save highlight" */}
+            <div
+              id="recipe-html"
+              dangerouslySetInnerHTML={{
+                __html: injectSaveButtons(result.html),
+              }}
+            />
           </section>
         ) : null}
 
@@ -162,5 +218,40 @@ export default function HomePage() {
         {toast}
       </div>
     </div>
+  );
+}
+
+// --- helpers ---
+
+function makeWholeTitle(html: string): string | null {
+  const m = html.match(/<h1[^>]*>(.*?)<\/h1>/i) || html.match(/<h2[^>]*>(.*?)<\/h2>/i);
+  return m ? stripTags(m[1]).slice(0, 120) : null;
+}
+function stripTags(s: string) {
+  const div = globalThis.document?.createElement("div");
+  if (!div) return s.replace(/<[^>]+>/g, "");
+  div.innerHTML = s;
+  return div.textContent || div.innerText || s;
+}
+/** Injects a "Save highlight" button in each `article.recipe` card, matching your card-grid inspiration. */
+function injectSaveButtons(html: string) {
+  // add a small toolbar to each article
+  return html.replace(
+    /<article\b([^>]*)>([\s\S]*?)<\/article>/gi,
+    (full, attrs, inner) => {
+      const toolbar =
+        `<div class="btns" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+           <button class="btn" data-save-highlight aria-label="Save this recipe highlight">
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+               <path d="M6 4h12a2 2 0 0 1 2 2v13l-8-4-8 4V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="2" fill="none"/>
+             </svg>
+             Save highlight
+           </button>
+         </div>`;
+      // try to append toolbar near the end of the card body
+      const injected = inner.replace(/<\/div>\s*<\/article>$/i, (_m) => `${toolbar}</div></article>`);
+      if (injected !== inner) return `<article${attrs}>${injected}</article>`;
+      return `<article${attrs}>${inner}${toolbar}</article>`;
+    }
   );
 }
