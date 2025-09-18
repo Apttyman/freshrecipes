@@ -1,21 +1,87 @@
 // app/archive/[slug]/page.tsx
-import { get } from "@vercel/blob";
-import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export default async function ArchivePage({ params }: { params: { slug: string } }) {
-  const key = `archive/${params.slug}/index.html`;
-  try {
-    const { url } = await get(key); // throws if key not found
-    const html = await (await fetch(url, { cache: "no-store" })).text();
+type PageProps = { params: { slug: string } };
+
+// Optional SEO
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const title = decodeURIComponent(params.slug)
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+  return { title: `${title} • Fresh Recipes` };
+}
+
+export default async function ArchiveItemPage({ params }: PageProps) {
+  const { slug } = params;
+  const base = process.env.NEXT_PUBLIC_BLOB_BASE; // e.g. https://xxxx.public.blob.vercel-storage.com (no trailing slash)
+
+  if (!base) {
     return (
-      <div style={{ maxWidth: 900, margin: "24px auto", padding: "0 16px" }}>
-        <div dangerouslySetInnerHTML={{ __html: html }} />
-      </div>
+      <main style={{ padding: 24 }}>
+        <h1>Archive</h1>
+        <p style={{ color: "crimson" }}>
+          Environment variable <code>NEXT_PUBLIC_BLOB_BASE</code> is not set.
+          Add it in Vercel → Project → Settings → Environment Variables.
+        </p>
+      </main>
     );
-  } catch {
-    notFound();
   }
+
+  const htmlUrl = `${base}/archive/${encodeURIComponent(slug)}/index.html`;
+  const metaUrl = `${base}/archive/${encodeURIComponent(slug)}/meta.json`;
+
+  let html = "";
+  let title = slug;
+
+  try {
+    const [hRes, mRes] = await Promise.all([
+      fetch(htmlUrl, { cache: "no-store" }),
+      fetch(metaUrl, { cache: "no-store" }),
+    ]);
+
+    if (mRes.ok) {
+      const meta = (await mRes.json().catch(() => null)) as
+        | { title?: string; slug?: string; savedAt?: string }
+        | null;
+      if (meta?.title) title = meta.title;
+    }
+
+    if (hRes.ok) {
+      html = await hRes.text();
+    }
+  } catch {
+    // fall through to link display
+  }
+
+  return (
+    <main style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+      <header style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: 0 }}>{title}</h1>
+        <p style={{ margin: "6px 0", color: "#667085" }}>/archive/{slug}</p>
+      </header>
+
+      {html ? (
+        <div
+          dangerouslySetInnerHTML={{ __html: html }}
+          style={{
+            border: "1px solid #eee",
+            borderRadius: 12,
+            overflow: "hidden",
+            boxShadow: "0 5px 18px rgba(0,0,0,.06)",
+            background: "#fff",
+          }}
+        />
+      ) : (
+        <p>
+          Couldn&apos;t fetch saved HTML. Open directly:&nbsp;
+          <a href={htmlUrl} target="_blank" rel="noreferrer">
+            {htmlUrl}
+          </a>
+        </p>
+      )}
+    </main>
+  );
 }
