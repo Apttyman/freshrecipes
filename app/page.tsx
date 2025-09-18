@@ -1,20 +1,20 @@
 // app/page.tsx
 "use client";
 
-import React, { useState } from "react";
-import Link from "next/link";
+import { useState } from "react";
 
-export default function HomePage() {
-  const [prompt, setPrompt] = useState("");
-  const [html, setHtml] = useState<string>("");
-  const [slug, setSlug] = useState<string>("");
-  const [status, setStatus] = useState<string>("");
-  const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(false);
+export default function Home() {
+  const [input, setInput] = useState("");
+  const [html, setHtml] = useState("");
+  const [slug, setSlug] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [debug, setDebug] = useState<string | null>(null);
 
   async function handleGenerate() {
-    setStatus("");
-    setLoading(true);
+    setBusy(true);
+    setError(null);
+    setDebug(null);
     setHtml("");
     setSlug("");
 
@@ -22,237 +22,230 @@ export default function HomePage() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt: input }),
       });
 
-      // Non-200? Still try to read the body for debug
-      const data = await res.json().catch(() => ({} as any));
-
-      // Expecting: { html, slug, rawSnippet?, error? }
-      const pageHtml = (data?.html ?? "").toString();
-      const newSlug = (data?.slug ?? "").toString();
-
-      if (pageHtml.trim()) {
-        setHtml(pageHtml);
-        setSlug(newSlug);
-      } else {
-        // Visible debug right in the page (no DevTools needed)
-        const dbg = `
-<pre style="white-space:pre-wrap;font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#b00020; padding:12px; border:1px solid #f3c; border-radius:8px; background:#fff5f8">
-⚠️ Debug: No HTML returned by /api/generate
-HTTP: ${res.status} ${res.statusText || ""}
-Error: ${data?.error || "(none)"}
-
-Raw snippet:
-${(data?.rawSnippet ?? "").toString() || "(empty)"}
-</pre>`;
-        setHtml(dbg);
-        setSlug(newSlug);
+      const text = await res.text(); // read raw
+      // try to parse JSON; if it fails, show raw text so the phone UI isn’t blank
+      let data: any = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        setError(`Non-JSON from /api/generate (status ${res.status})`);
+        setDebug(text.slice(0, 2000));
+        return;
       }
-    } catch (err: any) {
-      setHtml(
-        `<pre style="white-space:pre-wrap;font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#b00020; padding:12px; border:1px dashed #f99; border-radius:8px; background:#fff5f8">
-🚫 Network error calling /api/generate
 
-${String(err)}
-</pre>`
-      );
+      if (!res.ok) {
+        setError(`HTTP ${res.status}`);
+      }
+
+      if (data?.error) {
+        setError(String(data.error));
+      }
+      if (data?.rawSnippet) {
+        setDebug(String(data.rawSnippet));
+      }
+
+      const gotHtml = (data?.html ?? "").toString();
+      const gotSlug = (data?.slug ?? "").toString();
+
+      if (gotHtml.trim().length === 0) {
+        if (!data?.error) setError("Empty HTML in response.");
+        return;
+      }
+
+      setHtml(gotHtml);
+      setSlug(gotSlug);
+    } catch (e: any) {
+      setError(`Request failed: ${String(e?.message || e)}`);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
   async function handleSave() {
-    if (!html.trim()) {
-      setStatus("Nothing to save yet.");
-      return;
-    }
-    setSaving(true);
-    setStatus("");
+    if (!html) return;
+    setBusy(true);
+    setError(null);
 
     try {
       const res = await fetch("/api/save", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slug, html }),
+        body: JSON.stringify({ html, slug }),
       });
-
-      const data = await res.json().catch(() => ({} as any));
-
-      // Prefer API-provided URL; otherwise fall back to pretty route
-      const url =
-        (data?.url as string) ||
-        (slug ? `/recipes/${encodeURIComponent(slug)}` : "");
-
-      if (res.ok && url) {
-        setStatus(`✅ Saved. Open: ${url}`);
-      } else if (res.ok) {
-        setStatus(
-          `⚠️ Save succeeded but no URL was returned by /api/save. Slug: ${slug || "(none)"}`
-        );
-      } else {
-        setStatus(`❌ Save failed: ${data?.error || res.statusText}`);
+      const t = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(t);
+      } catch {
+        setError(`Non-JSON from /api/save (status ${res.status})`);
+        setDebug(t.slice(0, 2000));
+        return;
       }
-    } catch (err: any) {
-      setStatus(`❌ Save error: ${String(err)}`);
+
+      if (!res.ok || data?.error) {
+        setError(`Save failed: ${data?.error || `HTTP ${res.status}`}`);
+        return;
+      }
+
+      // If API returns a URL, open it. Otherwise notify.
+      const url: string | undefined = data?.url || data?.htmlUrl || data?.view;
+      if (url) {
+        window.location.href = url;
+      } else {
+        setError(`Save succeeded but no URL was returned by /api/save.`);
+      }
+    } catch (e: any) {
+      setError(`Save request failed: ${String(e?.message || e)}`);
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
 
   return (
-    <main style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          justifyContent: "space-between",
-          marginBottom: 16,
-        }}
-      >
-        <h1 style={{ fontSize: 32, fontWeight: 800, margin: 0 }}>
-          Fresh Recipes
-        </h1>
-        <Link
+    <main style={{ maxWidth: 900, margin: "0 auto", padding: "24px" }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h1 style={{ fontSize: 36, fontWeight: 800, letterSpacing: -0.5 }}>Fresh Recipes</h1>
+        <a
           href="/archive"
           style={{
             border: "1px solid #ddd",
-            borderRadius: 10,
             padding: "10px 14px",
+            borderRadius: 10,
             textDecoration: "none",
-            background: "#f7f7f7",
           }}
         >
           Open Archive
-        </Link>
+        </a>
       </header>
 
       <section
         style={{
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
+          border: "1px solid #eee",
           padding: 16,
-          marginBottom: 16,
-          background: "#fff",
+          borderRadius: 16,
+          marginTop: 12,
         }}
       >
-        <label
-          htmlFor="prompt"
-          style={{ display: "block", fontWeight: 700, marginBottom: 8 }}
-        >
-          What should we fetch &amp; render?
-        </label>
+        <h2 style={{ fontSize: 22, marginBottom: 10 }}>What should we fetch &amp; render?</h2>
         <textarea
-          id="prompt"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder='e.g. "3 recipes of homemade ice cream with cool photos"'
           rows={4}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="e.g., 3 iconic homemade ice cream recipes with step photos"
           style={{
             width: "100%",
-            border: "1px solid #d1d5db",
+            border: "1px solid #ddd",
             borderRadius: 12,
             padding: 12,
-            fontSize: 16,
+            fontSize: 18,
             outline: "none",
           }}
         />
-
-        <div
-          style={{
-            display: "flex",
-            gap: 12,
-            flexWrap: "wrap",
-            marginTop: 14,
-          }}
-        >
+        <div style={{ display: "flex", gap: 16, marginTop: 16 }}>
           <button
             onClick={handleGenerate}
-            disabled={loading || !prompt.trim()}
+            disabled={busy || !input.trim()}
             style={{
-              cursor: loading || !prompt.trim() ? "not-allowed" : "pointer",
               background: "#2563eb",
-              color: "#fff",
+              color: "white",
               border: "none",
-              borderRadius: 12,
-              padding: "14px 18px",
+              borderRadius: 14,
+              padding: "16px 20px",
+              fontSize: 20,
               fontWeight: 700,
-              minWidth: 180,
+              opacity: busy || !input.trim() ? 0.6 : 1,
             }}
           >
-            {loading ? "Generating…" : "Generate HTML"}
+            {busy ? "Working…" : "Generate HTML"}
           </button>
 
           <button
             onClick={handleSave}
-            disabled={saving || !html.trim()}
+            disabled={busy || !html}
             style={{
-              cursor: saving || !html.trim() ? "not-allowed" : "pointer",
-              background: "#111827",
-              color: "#fff",
-              border: "none",
-              borderRadius: 12,
-              padding: "14px 18px",
+              background: "white",
+              color: "#111",
+              border: "1px solid #ddd",
+              borderRadius: 14,
+              padding: "16px 20px",
+              fontSize: 20,
               fontWeight: 700,
-              minWidth: 180,
-              opacity: html.trim() ? 1 : 0.4,
+              opacity: busy || !html ? 0.5 : 1,
             }}
           >
-            {saving ? "Saving…" : "Save to Archive"}
+            Save to Archive
           </button>
         </div>
 
-        {status && (
-          <p
+        {error && (
+          <div
             style={{
-              marginTop: 10,
-              color: status.startsWith("✅") ? "#065f46" : "#b00020",
-              fontSize: 14,
+              color: "#b91c1c",
+              background: "#fee2e2",
+              border: "1px solid #fecaca",
+              borderRadius: 12,
+              padding: 10,
+              marginTop: 12,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              whiteSpace: "pre-wrap",
               wordBreak: "break-word",
             }}
           >
-            {status.startsWith("✅") ? (
-              <>
-                ✅ Saved.{" "}
-                <a
-                  href={status.replace(/^✅ Saved\. Open:\s*/, "")}
-                  style={{ color: "#2563eb" }}
-                >
-                  Open saved page
-                </a>
-              </>
-            ) : (
-              status
-            )}
-          </p>
+            {JSON.stringify({ error }, null, 2)}
+          </div>
+        )}
+        {debug && (
+          <details style={{ marginTop: 8 }}>
+            <summary style={{ cursor: "pointer" }}>Show raw response (debug)</summary>
+            <pre
+              style={{
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                background: "#f8fafc",
+                border: "1px solid #e5e7eb",
+                borderRadius: 8,
+                padding: 10,
+                fontSize: 12,
+              }}
+            >
+              {debug}
+            </pre>
+          </details>
         )}
       </section>
 
-      <details open style={{ marginTop: 8 }}>
-        <summary
-          style={{
-            fontWeight: 700,
-            cursor: "pointer",
-            marginBottom: 8,
-          }}
-        >
-          Preview (inline)
-        </summary>
-
-        <div
-          style={{
-            border: "1px solid #e5e7eb",
-            borderRadius: 12,
-            background: "#fff",
-            padding: 12,
-            minHeight: 240,
-            overflow: "auto",
-          }}
-          // On purpose: this is a preview surface for fully-formed HTML
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      </details>
+      <section style={{ marginTop: 20 }}>
+        <details open>
+          <summary style={{ fontSize: 22, fontWeight: 700 }}>
+            Preview (inline)
+          </summary>
+          <div
+            style={{
+              border: "1px solid #eee",
+              borderRadius: 12,
+              marginTop: 10,
+              padding: 4,
+              minHeight: 200,
+            }}
+          >
+            {html ? (
+              <iframe
+                title="preview"
+                sandbox="allow-same-origin allow-popups allow-forms"
+                style={{ width: "100%", height: "75vh", border: "none", borderRadius: 10 }}
+                srcDoc={html}
+              />
+            ) : (
+              <div style={{ color: "#666", padding: 16, fontStyle: "italic" }}>
+                Nothing to show yet.
+              </div>
+            )}
+          </div>
+        </details>
+      </section>
     </main>
   );
 }
