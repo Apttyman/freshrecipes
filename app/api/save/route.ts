@@ -1,7 +1,7 @@
 // app/api/save/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
-import { slugify } from "@/app/lib/html-tools";
+import { slugify } from "../../lib/html-tools"; // ⬅️ relative import
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,7 +17,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing html" }, { status: 400 });
     }
 
-    // Store two blobs: index.html + meta.json
     const htmlKey = `archive/${slug}/index.html`;
     const jsonKey = `archive/${slug}/meta.json`;
 
@@ -32,7 +31,6 @@ export async function POST(req: NextRequest) {
       access: "public",
     });
 
-    // Return canonical viewer URL (your Next.js route)
     const viewUrl = `/archive/${slug}`;
 
     return NextResponse.json(
