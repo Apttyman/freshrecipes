@@ -1,15 +1,29 @@
 "use client";
 
-import useSWR from "swr";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 
 type Row = { id: string; title: string; description: string; createdAt: string };
 type Data = { full: Row[]; highlight: Row[] };
 
-const fetcher = (u: string) => fetch(u).then((r) => r.json());
-
 export default function ArchivePage() {
-  const { data, mutate } = useSWR<Data>("/api/archive/list", fetcher);
+  const [data, setData] = useState<Data | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/archive/list", { cache: "no-store" });
+      const j = (await r.json()) as Data;
+      setData(j);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
 
   async function onDelete(id: string) {
     if (!confirm("Delete this item?")) return;
@@ -18,10 +32,13 @@ export default function ArchivePage() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id }),
     });
-    mutate();
+    await load();
   }
 
   function RowList({ rows }: { rows: Row[] }) {
+    if (!rows?.length) {
+      return <div className="card p-4 text-slate-600">No items yet.</div>;
+    }
     return (
       <div className="space-y-2">
         {rows.map((r) => (
@@ -34,11 +51,9 @@ export default function ArchivePage() {
               <div className="text-slate-500 text-xs">{new Date(r.createdAt).toLocaleString()}</div>
             </div>
             <div className="flex items-center gap-2">
-              {/* Send/Print */}
               <Link className="btn" href={`/r/${r.id}?print=1`} title="Print to PDF">
                 <ArrowUpIcon />
               </Link>
-              {/* Delete */}
               <button className="btn" onClick={() => onDelete(r.id)} title="Delete">
                 <TrashIcon />
               </button>
@@ -58,8 +73,10 @@ export default function ArchivePage() {
         </div>
       </header>
 
-      {!data ? (
+      {loading ? (
         <div className="card p-4">Loading…</div>
+      ) : !data ? (
+        <div className="card p-4 text-red-700">Failed to load.</div>
       ) : (
         <div className="grid md:grid-cols-2 gap-6">
           <section className="space-y-3">
