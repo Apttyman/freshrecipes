@@ -2,56 +2,32 @@
 @tailwind components;
 @tailwind utilities;
 
-/* =========================================================
-   Force a consistent light UI regardless of system dark mode
-   ========================================================= */
-:root {
-  color-scheme: light; /* tells the UA (Safari) to render controls in light */
+/* --- Playfair Display usage ----------------------------------------------
+   We imported the font in layout.tsx and exposed it as CSS variable
+   `--font-display`. Apply it to any element with the `.recipe-title` class.
+--------------------------------------------------------------------------- */
+
+.recipe-title {
+  font-family: var(--font-display), ui-serif, Georgia, 'Times New Roman', serif;
+  letter-spacing: -0.01em;        /* subtle, classy */
+  line-height: 1.1;               /* tighter for display headlines */
 }
 
-/* In case your Tailwind config has darkMode:'class', ensure we never
-   accidentally switch palettes by a rogue .dark class from extensions. */
-html.no-dark, html.no-dark body {
-  background-color: #f8fafc; /* slate-50 */
-  color: #0f172a;            /* slate-900 */
+/* (Optional) utility if you want to use the display face elsewhere */
+.font-display {
+  font-family: var(--font-display), ui-serif, Georgia, 'Times New Roman', serif;
 }
 
-/* Buttons/cards defaults (keeps your current visual tokens) */
-.btn {
-  @apply rounded-xl border border-slate-200 bg-white text-slate-900
-         shadow-sm hover:bg-slate-50 active:bg-slate-100;
-}
-.card {
-  @apply rounded-2xl border border-slate-200 bg-white shadow-sm;
+/* Base tweaks so the display face looks crisp */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Typography in preview content */
-.prose {
-  @apply max-w-none;
-}
-
-/* Images produced by the model */
-.prose img,
-.recipe-cover {
-  @apply rounded-xl w-full h-auto my-4;
-}
-
-/* =========================================================
-   Neutralize iOS "Smart Invert" (if the user has it enabled)
-   This media query is supported by Safari/iOS.
-   We invert the whole document back, then re-invert images/media.
-   ========================================================= */
-@media (inverted-colors: inverted) {
-  html {
-    filter: invert(1) hue-rotate(180deg);
-    background: #f8fafc !important;
-  }
-  img, video, canvas, picture, svg {
-    filter: invert(1) hue-rotate(180deg); /* cancel the global invert */
-  }
-}
-
-/* Slightly nicer scroll bouncing on iOS */
-body {
-  -webkit-overflow-scrolling: touch;
+/* Card polish (safe to keep even without Tailwind) */
+.recipe-card {
+  background: #fff;
+  border-radius: 1rem;
+  border: 1px solid rgb(226 232 240); /* slate-200 */
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); /* soft */
 }
