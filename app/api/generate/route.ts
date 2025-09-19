@@ -1,6 +1,5 @@
-// app/api/generate/route.ts
 import { NextResponse } from 'next/server'
-import { readFile } from 'fs/promises'
+import SYSTEM_PROMPT from '../../prompt/system-prompt'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,48 +13,33 @@ function bad(message: string, status = 400) {
   return NextResponse.json({ recipes: [], error: message }, { status, headers: { 'Cache-Control': 'no-store' } })
 }
 
-// Load system prompt bundled with this route (app/prompt/system-prompt.txt)
-async function loadSystemPrompt(): Promise<string> {
-  try {
-    // route.ts => app/api/generate/route.ts
-    // prompt file => app/prompt/system-prompt.txt
-    const url = new URL('../../prompt/system-prompt.txt', import.meta.url)
-    return await readFile(url, 'utf8')
-  } catch (e) {
-    // Optional env override
-    if (process.env.SYSTEM_PROMPT) return process.env.SYSTEM_PROMPT
-    throw new Error('system-prompt.txt not found at app/prompt/system-prompt.txt')
-  }
-}
-
 export async function POST(req: Request) {
   try {
-    const apiKey = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY
-    if (!apiKey) return bad('Missing model API key (OPENAI_API_KEY or ANTHROPIC_API_KEY).', 500)
+    const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey) return bad('Missing OPENAI_API_KEY.', 500)
 
     let body: GenerateRequest | null = null
     try { body = await req.json() } catch { return bad('POST JSON with { "query": string }', 400) }
     const query = (body?.query || '').trim()
     if (!query) return bad('Query is required.', 400)
 
-    const systemPrompt = await loadSystemPrompt()
+    // Allow env override but default to the compiled-in string
+    const systemPrompt = process.env.SYSTEM_PROMPT || SYSTEM_PROMPT
 
-    const providerUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/chat/completions'
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
-
-    const resp = await fetch(providerUrl, {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY!}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model,
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: query },
         ],
         temperature: 0.7,
+        // Do NOT force JSON here; we want to allow full HTML OR JSON.
       }),
     })
 
@@ -67,14 +51,18 @@ export async function POST(req: Request) {
     const json = await resp.json().catch(() => null as any)
     const content: string | undefined = json?.choices?.[0]?.message?.content
 
-    // Full HTML document case
-    if (typeof content === 'string' && content.includes('<html')) return ok({ html: content })
+    // Case A: complete HTML document -> return { html } for your iframe
+    if (typeof content === 'string' && content.includes('<html') && content.includes('</html>')) {
+      return ok({ html: content })
+    }
 
-    // Structured recipes JSON case
+    // Case B: recipes JSON -> return { recipes } for your JSON renderer
     try {
       const parsed = typeof content === 'string' ? JSON.parse(content) : content
       if (Array.isArray(parsed?.recipes)) return ok({ recipes: parsed.recipes })
-    } catch { /* content wasn't JSON */ }
+    } catch {
+      /* not JSON; fall through */
+    }
 
     return bad('Model did not return a complete HTML document or recipes.', 502)
   } catch (err: any) {
