@@ -2,54 +2,56 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens */
-:root{
-  --primary:#2e5bff;
-  --ink:#0f172a;
-  --muted:#475569;
-  --bg:#f7f7fb;
-  --card:#ffffff;
-  --ring:#94a3b8;
-  --shadow:0 10px 30px rgba(15,23,42,.10);
-  --radius:16px;
+/* =========================================================
+   Force a consistent light UI regardless of system dark mode
+   ========================================================= */
+:root {
+  color-scheme: light; /* tells the UA (Safari) to render controls in light */
 }
-@media (prefers-color-scheme: dark){
-  :root{
-    --bg:#0b1116; --card:#0f1720; --ink:#e5eef5; --muted:#9fb0bf; --shadow:0 16px 30px rgba(0,0,0,.45);
+
+/* In case your Tailwind config has darkMode:'class', ensure we never
+   accidentally switch palettes by a rogue .dark class from extensions. */
+html.no-dark, html.no-dark body {
+  background-color: #f8fafc; /* slate-50 */
+  color: #0f172a;            /* slate-900 */
+}
+
+/* Buttons/cards defaults (keeps your current visual tokens) */
+.btn {
+  @apply rounded-xl border border-slate-200 bg-white text-slate-900
+         shadow-sm hover:bg-slate-50 active:bg-slate-100;
+}
+.card {
+  @apply rounded-2xl border border-slate-200 bg-white shadow-sm;
+}
+
+/* Typography in preview content */
+.prose {
+  @apply max-w-none;
+}
+
+/* Images produced by the model */
+.prose img,
+.recipe-cover {
+  @apply rounded-xl w-full h-auto my-4;
+}
+
+/* =========================================================
+   Neutralize iOS "Smart Invert" (if the user has it enabled)
+   This media query is supported by Safari/iOS.
+   We invert the whole document back, then re-invert images/media.
+   ========================================================= */
+@media (inverted-colors: inverted) {
+  html {
+    filter: invert(1) hue-rotate(180deg);
+    background: #f8fafc !important;
+  }
+  img, video, canvas, picture, svg {
+    filter: invert(1) hue-rotate(180deg); /* cancel the global invert */
   }
 }
-body{background:var(--bg); color:var(--ink); -webkit-font-smoothing:antialiased}
-.container{max-width:1100px;margin:0 auto;padding:0 24px}
-.card{background:var(--card); border:1px solid rgba(148,163,184,.25); border-radius:var(--radius); box-shadow:var(--shadow)}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;font-weight:600;border:1px solid rgba(148,163,184,.5);background:var(--card);transition:transform .06s ease, background .2s ease,border-color .2s ease}
-.btn:active{transform:translateY(1px)}
-.btn:focus{outline:3px solid var(--ring);outline-offset:2px}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;padding:10px 14px;border-radius:999px;background:#111827;color:#fff;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .3s, transform .3s}
-.toast.show{opacity:1;transform:translate(-50%,-6px)}
 
-/* BEAUTY LAYER for whatever HTML the LLM returns */
-.recipe-page h1{font-size:clamp(32px,6vw,64px);line-height:1.05;letter-spacing:-0.02em;margin:8px 0 16px}
-.recipe-subtitle{color:var(--muted);font-size:14px;margin-bottom:24px}
-
-.recipe-grid{display:grid;gap:24px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));margin-top:16px}
-.recipe-card{background:var(--card);border:1px solid rgba(148,163,184,.35);border-radius:18px;overflow:hidden;box-shadow:var(--shadow);transition:transform .15s ease,border-color .2s ease}
-.recipe-card:hover{transform:translateY(-3px);border-color:rgba(46,91,255,.45)}
-.recipe-cover{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#0b1116}
-.recipe-body{padding:16px 16px 18px}
-.recipe-title{font-size:22px;font-weight:700;margin:0 0 6px}
-.recipe-chef{color:var(--muted);font-style:italic;margin-bottom:10px}
-.recipe-section{font-weight:700;margin:12px 0 6px}
-.recipe-meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:12px}
-.recipe-list{margin:0;padding-left:18px}
-.recipe-steps li+li{margin-top:6px}
-
-/* Base typography when the model returns plain prose */
-.recipe-surface h1{font-size:clamp(28px,5vw,44px);margin:.1em 0 .3em}
-.recipe-surface h2{font-size:clamp(22px,3.8vw,28px);margin:1.2em 0 .4em}
-.recipe-surface h3{font-size:18px;margin:1em 0 .4em}
-.recipe-surface p{margin:.6em 0}
-.recipe-surface ul, .recipe-surface ol{margin:.4em 0 .8em;padding-left:1.2em}
-.recipe-surface img{max-width:100%;border-radius:12px;box-shadow:var(--shadow)}
-
-/* Print-friendly */
-@media print{.btn,.toast,.fixed{display:none !important}body{background:#fff}}
+/* Slightly nicer scroll bouncing on iOS */
+body {
+  -webkit-overflow-scrolling: touch;
+}
