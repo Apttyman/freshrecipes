@@ -1,187 +1,194 @@
-'use client';
+"use client";
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Playfair_Display } from "next/font/google";
 
-// -------- Types --------
-type Section = { heading?: string; html: string };
+const playfair = Playfair_Display({
+  subsets: ["latin"],
+  display: "swap",
+  weight: ["700", "800", "900"],
+});
+
+type Section = {
+  heading?: string | null;
+  html?: string | null; // server gives HTML strings
+};
+
 type Recipe = {
   id: number | string;
   title: string;
-  author?: string;
-  imageUrl?: string;
-  sections: Section[];
+  author?: string | null;
+  // either a single HTML blob or structured sections
+  sections?: Section[];
+  html?: string | null;
+  imageUrl?: string | null; // optional; never required to render
 };
-type GenerateResponse = { recipes?: Recipe[] };
 
-// -------- Clipboard + text helpers --------
-async function copyToClipboard(text: string) {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-    throw new Error('no async clipboard');
-  } catch {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      ta.style.left = '-9999px';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return ok;
-    } catch {
-      return false;
-    }
-  }
-}
-function htmlToPlainText(html: string) {
-  const div = document.createElement('div');
-  div.innerHTML = html;
-  return (div.textContent || div.innerText || '').trim();
-}
-function recipeToText(r: Recipe) {
-  const parts: string[] = [];
-  parts.push(`# ${r.title}`);
-  if (r.author) parts.push(`by ${r.author}`);
-  for (const s of r.sections) {
-    if (s.heading) parts.push(`\n## ${s.heading}\n`);
-    parts.push(htmlToPlainText(s.html));
-  }
-  return parts.join('\n').trim();
-}
-function allRecipesToText(recipes: Recipe[]) {
-  return recipes.map(recipeToText).join('\n\n---\n\n');
+type ApiOk = { recipes: Recipe[] };
+
+type LogLine = {
+  kind: "req" | "res" | "err";
+  text: string;
+};
+
+function coerceMarkdownImages(s: string) {
+  // Minimal & safe: turn ![alt](url) into <img ...>.
+  // (This never removes other content and won’t throw if there’s no match.)
+  return s.replace(
+    /!\[([^\]]*?)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_full, alt, url) =>
+      `<img src="${url}" alt="${String(alt).replace(/"/g, "&quot;")}" />`
+  );
 }
 
-// -------- Local archive (fallback) --------
-const LS_KEY = 'freshrecipes_archive_v1';
-function pushToLocalArchive(item: Recipe) {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    const arr: Recipe[] = raw ? JSON.parse(raw) : [];
-    arr.unshift(item);
-    localStorage.setItem(LS_KEY, JSON.stringify(arr));
-  } catch {}
-}
-async function postArchive(item: Recipe) {
-  try {
-    const res = await fetch('/api/archive', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recipe: item }),
-    });
-    if (!res.ok) throw new Error('archive route not available');
-  } catch {
-    /* ignore – local archive already done */
+function normalizeHtml(input?: string | null) {
+  if (!input) return "";
+  // Preserve server HTML; also tolerate stray \n and simple markdown images.
+  let s = input;
+  if (s.includes("\n") && !/<[a-z][\s\S]*>/i.test(s)) {
+    // Looks like plain text — make newlines visible.
+    s = s.replace(/\n/g, "<br/>");
   }
+  return coerceMarkdownImages(s);
 }
 
-// -------- Page --------
+const ARCHIVE_KEY = "freshrecipes-archive";
+
 export default function Page() {
-  const [prompt, setPrompt] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [prompt, setPrompt] = useState("");
   const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [log, setLog] = useState<string[]>([]);
-  const [toast, setToast] = useState<string>('');
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<LogLine[]>([]);
+  const [savedIds, setSavedIds] = useState<Record<string | number, boolean>>({});
 
-  const pushLog = useCallback((line: string) => {
-    setLog(prev => [...prev.slice(-200), line]);
+  // ----- logging helpers -----------------------------------------------------
+  const pushLog = useCallback((line: LogLine) => {
+    setLog((prev) => [line, ...prev].slice(0, 50));
   }, []);
 
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(''), 1400);
-  }, []);
-
-  const handleGenerate = useCallback(async () => {
-    setLoading(true);
-    setRecipes([]);
-    pushLog(`→ POST /api/generate`);
+  // ----- archive helpers -----------------------------------------------------
+  const saveToArchive = useCallback((items: Recipe[]) => {
     try {
-      const res = await fetch('/api/generate?_=' + Date.now(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+      const existing: Recipe[] = JSON.parse(
+        localStorage.getItem(ARCHIVE_KEY) || "[]"
+      );
+      const merged = [...items, ...existing];
+      localStorage.setItem(ARCHIVE_KEY, JSON.stringify(merged));
+      items.forEach((r) =>
+        setSavedIds((m) => ({ ...m, [r.id]: true }))
+      );
+    } catch (e) {
+      pushLog({ kind: "err", text: `Archive error: ${(e as Error).message}` });
+    }
+  }, [pushLog]);
+
+  // ----- actions -------------------------------------------------------------
+  const onGenerate = useCallback(async () => {
+    if (!prompt.trim()) return;
+    setBusy(true);
+    setRecipes([]);
+    pushLog({ kind: "req", text: `POST /api/generate — body: ${JSON.stringify({ prompt })}` });
+
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }), // ✅ what the API expects
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as GenerateResponse;
-      pushLog('— Raw payload (truncated) —');
-      pushLog(JSON.stringify(json).slice(0, 2000));
-      setRecipes(Array.isArray(json.recipes) ? json.recipes : []);
-    } catch (err: any) {
-      pushLog(`✖ Error: ${err?.message ?? 'Request failed'}`);
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        pushLog({
+          kind: "err",
+          text: `HTTP ${res.status} from /api/generate ${text ? `— ${text.slice(0, 160)}` : ""}`,
+        });
+        setBusy(false);
+        return;
+      }
+
+      const data = (await res.json()) as ApiOk;
+      pushLog({
+        kind: "res",
+        text: `OK — received ${Array.isArray(data?.recipes) ? data.recipes.length : 0} recipe(s)`,
+      });
+
+      setRecipes(Array.isArray(data?.recipes) ? data.recipes : []);
+    } catch (e) {
+      pushLog({ kind: "err", text: `Load failed — ${(e as Error).message}` });
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }, [prompt, pushLog]);
 
-  const handleCopyAll = useCallback(async () => {
-    if (!recipes.length) return;
-    const ok = await copyToClipboard(allRecipesToText(recipes));
-    showToast(ok ? 'Copied all' : 'Copy failed');
-  }, [recipes, showToast]);
+  const onCopyAll = useCallback(async () => {
+    try {
+      const text = recipes
+        .map((r) => {
+          const sections = r.sections?.map((s) => {
+            const plain =
+              s?.html
+                ?.replace(/<[^>]+>/g, " ")
+                .replace(/\s+/g, " ")
+                .trim() ?? "";
+            return `${s?.heading ?? ""}\n${plain}`.trim();
+          }).join("\n\n") ||
+          (r.html
+            ?.replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim() ?? "");
+          return `# ${r.title}\n${r.author ? `by ${r.author}\n` : ""}${sections}`;
+        })
+        .join("\n\n---\n\n");
 
-  const handleSaveAll = useCallback(async () => {
-    if (!recipes.length) return;
-    for (const r of recipes) {
-      pushToLocalArchive(r);
-      await postArchive(r);
+      await navigator.clipboard.writeText(text);
+      pushLog({ kind: "res", text: "Copied all recipes to clipboard." });
+    } catch (e) {
+      pushLog({ kind: "err", text: `Copy failed — ${(e as Error).message}` });
     }
-    showToast('Saved all');
-  }, [recipes, showToast]);
+  }, [recipes, pushLog]);
 
-  const handleSaveOne = useCallback(async (r: Recipe) => {
-    pushToLocalArchive(r);
-    await postArchive(r);
-    showToast('Saved');
-  }, [showToast]);
+  const onSaveOne = useCallback((r: Recipe) => {
+    saveToArchive([r]);
+    pushLog({ kind: "res", text: `Saved “${r.title}” to archive.` });
+  }, [saveToArchive, pushLog]);
 
-  // touch helper for iOS: make sure the event counts as a user gesture
-  const touchWrap = (fn: () => void) => (e: React.TouchEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    fn();
-  };
+  const onSaveAll = useCallback(() => {
+    if (!recipes.length) return;
+    saveToArchive(recipes);
+    pushLog({ kind: "res", text: `Saved ${recipes.length} recipe(s) to archive.` });
+  }, [recipes, saveToArchive, pushLog]);
+
+  // ----- UI pieces -----------------------------------------------------------
+  const actionsDisabled = busy || !prompt.trim();
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-8">
-      <h1 className="text-4xl font-extrabold tracking-tight">FreshRecipes</h1>
-      <p className="text-neutral-500 mt-2">
+      <h1 className="text-4xl font-extrabold tracking-tight mb-3">FreshRecipes</h1>
+      <p className="text-lg text-zinc-600 mb-6">
         Type a natural-language request. We’ll fetch and format it.
       </p>
 
-      <div className="mt-6 flex gap-3 flex-wrap">
+      <div className="flex gap-3 mb-4">
         <button
-          type="button"
-          onClick={handleGenerate}
-          onTouchEnd={touchWrap(handleGenerate)}
-          disabled={loading}
-          className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold text-white bg-black disabled:opacity-50"
+          disabled={actionsDisabled}
+          onClick={onGenerate}
+          className={`px-5 py-3 rounded-xl font-semibold text-white ${actionsDisabled ? "bg-zinc-400" : "bg-black hover:bg-zinc-800"}`}
         >
-          {loading ? 'Generating…' : 'Generate'}
+          {busy ? "Generating…" : "Generate"}
         </button>
 
         <button
-          type="button"
-          onClick={handleCopyAll}
-          onTouchEnd={touchWrap(handleCopyAll)}
           disabled={!recipes.length}
-          className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold border border-neutral-300 disabled:opacity-40"
+          onClick={onCopyAll}
+          className={`px-5 py-3 rounded-xl font-semibold border ${!recipes.length ? "opacity-50" : "hover:bg-zinc-50"}`}
         >
           Copy all
         </button>
 
         <button
-          type="button"
-          onClick={handleSaveAll}
-          onTouchEnd={touchWrap(handleSaveAll)}
           disabled={!recipes.length}
-          className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold border border-neutral-300 disabled:opacity-40"
+          onClick={onSaveAll}
+          className={`px-5 py-3 rounded-xl font-semibold border ${!recipes.length ? "opacity-50" : "hover:bg-zinc-50"}`}
         >
           Save all to archive
         </button>
@@ -190,74 +197,97 @@ export default function Page() {
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
-        placeholder="e.g., Smoky salmon grill recipe with honey glaze"
-        className="mt-4 w-full min-h-[140px] rounded-2xl border border-neutral-300 px-4 py-3 outline-none"
+        placeholder="e.g., Empanada recipe with chicken and olives"
+        className="w-full h-40 rounded-2xl border p-4 mb-8"
       />
 
-      <h2 className="mt-10 text-3xl font-extrabold">Preview</h2>
+      <h2 className="text-2xl font-extrabold mb-3">Preview</h2>
 
       {!recipes.length ? (
-        <p className="text-neutral-500 mt-3">
-          No recipes yet. Try typing a request above.
-        </p>
+        <p className="text-zinc-500 mb-6">No recipes yet. Try typing a request above.</p>
       ) : null}
 
-      <div className="mt-6 space-y-8">
-        {recipes.map((r) => (
-          <article
-            key={r.id}
-            className="rounded-3xl border border-neutral-200 p-6 relative"
-          >
-            <header className="mb-4">
-              <h3 className="text-4xl font-black leading-tight">{r.title}</h3>
-              {r.author ? (
-                <p className="text-neutral-500 mt-1">Chef {r.author}</p>
-              ) : null}
-            </header>
+      <div className="space-y-6">
+        {recipes.map((r) => {
+          const hasSections = Array.isArray(r.sections) && r.sections.length > 0;
+          return (
+            <article
+              key={r.id}
+              className="rounded-2xl border p-6 shadow-sm bg-white"
+            >
+              <header className="mb-4">
+                <h3 className={`${playfair.className} text-4xl leading-tight font-black`}>
+                  {r.title}
+                </h3>
+                {r.author ? (
+                  <p className="text-zinc-500 mt-2">{r.author}</p>
+                ) : null}
+              </header>
 
-            {/* Ensure body cannot overlay buttons */}
-            <div className="relative z-0">
-              {r.sections.map((s, idx) => (
-                <section key={idx} className="mt-6">
-                  {s.heading ? (
-                    <h3 className="text-2xl font-semibold mb-2">{s.heading}</h3>
-                  ) : null}
-                  <div
-                    className="prose prose-lg max-w-none leading-7"
-                    style={{ position: 'relative' }}
-                    dangerouslySetInnerHTML={{ __html: s.html }}
-                  />
-                </section>
-              ))}
-            </div>
+              {/* Body */}
+              <div className="space-y-4">
+                {hasSections
+                  ? r.sections!.map((s, idx) => (
+                      <section key={idx}>
+                        {s?.heading ? (
+                          <h4 className="text-2xl font-extrabold mb-2">
+                            {s.heading}
+                          </h4>
+                        ) : null}
+                        <div
+                          className="prose max-w-none"
+                          dangerouslySetInnerHTML={{
+                            __html: normalizeHtml(s?.html) || "<em>(No content)</em>",
+                          }}
+                        />
+                      </section>
+                    ))
+                  : (
+                    <div
+                      className="prose max-w-none"
+                      dangerouslySetInnerHTML={{
+                        __html:
+                          normalizeHtml(r.html) ||
+                          "<em>(No recipe body returned from server.)</em>",
+                      }}
+                    />
+                  )}
 
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                onClick={() => handleSaveOne(r)}
-                onTouchEnd={touchWrap(() => handleSaveOne(r))}
-                className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold border border-neutral-300"
-              >
-                Save highlight
-              </button>
-            </div>
-          </article>
-        ))}
+                {/* Single save button per recipe */}
+                <div className="pt-2">
+                  <button
+                    onClick={() => onSaveOne(r)}
+                    className={`px-5 py-3 rounded-xl font-semibold border hover:bg-zinc-50 ${savedIds[r.id] ? "opacity-60" : ""}`}
+                    disabled={!!savedIds[r.id]}
+                    aria-disabled={!!savedIds[r.id]}
+                  >
+                    {savedIds[r.id] ? "Saved" : "Save highlight"}
+                  </button>
+                </div>
+              </div>
+            </article>
+          );
+        })}
       </div>
 
-      <div className="mt-10 rounded-3xl border border-neutral-200 p-4">
-        <h3 className="text-xl font-bold mb-2">Request log</h3>
-        <pre className="whitespace-pre-wrap text-sm text-neutral-700">
-          {log.join('\n')}
-        </pre>
-      </div>
-
-      {/* Tiny toast */}
-      {toast ? (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black text-white px-4 py-2 text-sm shadow-lg">
-          {toast}
+      {/* Request log */}
+      <section className="mt-10">
+        <h3 className="text-xl font-bold mb-3">Request log</h3>
+        <div className="rounded-2xl border p-4 bg-white max-h-80 overflow-auto text-sm font-mono whitespace-pre-wrap">
+          {log.length === 0 ? (
+            <span className="text-zinc-500">No entries yet.</span>
+          ) : (
+            log.map((l, i) => {
+              const bullet = l.kind === "req" ? "→" : l.kind === "res" ? "✓" : "✖";
+              return (
+                <div key={i} className="mb-2">
+                  {bullet} {l.text}
+                </div>
+              );
+            })
+          )}
         </div>
-      ) : null}
+      </section>
     </main>
   );
 }
