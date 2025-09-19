@@ -1,131 +1,58 @@
-/**
- * html-tools
- * ----------
- * Pure presentation helpers used both on client and server.
- * - normalizeModelHtml: strip ``` fences, convert basic Markdown images to <img>.
- * - rewriteImages: client-side enhancements for <img>.
- * - rewriteImagesToCloudinaryFetch: server-side pass-through (no-op CDN wrapper by default).
- */
+// app/lib/html-tools.ts
+// Display-only helpers: clean LLM output and make it presentable HTML
+// No business logic, no prompt changes.
 
-function stripFences(s: string): string {
-  // Remove leading/trailing ``` or ```html style fences
-  const m = s.match(/^\s*```(?:html)?\s*([\s\S]*?)\s*```\s*$/i);
-  return m ? m[1] : s;
+function stripCodeFences(s: string): string {
+  // Remove ```lang ... ``` fences and lone backticks
+  return s
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```/g, "")) // keep inner text, drop fences
+    .replace(/`{1,3}/g, ""); // drop stray ticks that leak through
 }
 
-/**
- * Convert very simple Markdown image syntax to <img>.
- * We AVOID regex literals so build systems / sanitizers can't corrupt them.
- * Pattern handled:  ![alt](https://url)
- */
-function mdImageToHtml(input: string): string {
-  if (!input || input.indexOf("![") === -1) return input;
-
-  let i = 0;
-  let out = "";
-  const s = input;
-
-  while (i < s.length) {
-    const bang = s.indexOf("![", i);
-    if (bang === -1) {
-      out += s.slice(i);
-      break;
-    }
-    // copy text before match
-    out += s.slice(i, bang);
-
-    const altEnd = s.indexOf("]", bang + 2);
-    if (altEnd === -1) {
-      // not a real match; bail forward
-      out += s.slice(bang, bang + 2);
-      i = bang + 2;
-      continue;
-    }
-
-    const openParen = s.indexOf("(", altEnd + 1);
-    if (openParen !== altEnd + 1) {
-      // no immediate "(" -> not our pattern
-      out += s.slice(bang, altEnd + 1);
-      i = altEnd + 1;
-      continue;
-    }
-
-    const closeParen = s.indexOf(")", openParen + 1);
-    if (closeParen === -1) {
-      // unterminated
-      out += s.slice(bang, altEnd + 1);
-      i = altEnd + 1;
-      continue;
-    }
-
-    const alt = s.slice(bang + 2, altEnd);
-    const url = s.slice(openParen + 1, closeParen).trim();
-
-    // Accept only http(s) URLs
-    if (!/^https?:\/\//i.test(url)) {
-      out += s.slice(bang, closeParen + 1);
-      i = closeParen + 1;
-      continue;
-    }
-
-    const safeAlt = String(alt).replace(/"/g, "&quot;");
-    out += `<img src="${url}" alt="${safeAlt}" />`;
-    i = closeParen + 1;
-  }
-
-  return out;
+function decodeEscapedNewlines(s: string): string {
+  // Turn "\r\n" or "\n" escape sequences into real newlines
+  return s.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n");
 }
 
-export function normalizeModelHtml(raw: string): string {
-  let html = raw ?? "";
-  html = stripFences(html);
-  html = mdImageToHtml(html);
-  return html;
-}
-
-/**
- * Client-side image cleanup:
- * - removes non-http(s) src (e.g., data:)
- * - adds a default class for layout
- * - ensures an alt attribute exists
- */
-export function rewriteImages(html: string): string {
-  const normalized = normalizeModelHtml(html);
-  try {
-    const doc = new DOMParser().parseFromString(normalized, "text/html");
-    doc.querySelectorAll("img").forEach((img) => {
-      const src = img.getAttribute("src") || "";
-      if (!/^https?:\/\//i.test(src)) {
-        // Drop invalid/data images to avoid broken renders
-        img.removeAttribute("src");
-      }
-      img.classList.add("recipe-cover");
-      if (!img.hasAttribute("alt")) img.setAttribute("alt", "Recipe image");
-      img.removeAttribute("width");
-      img.removeAttribute("height");
-      img.removeAttribute("style");
-    });
-    return doc.body.innerHTML;
-  } catch {
-    return normalized;
-  }
-}
-
-/**
- * Server-side optional wrapper: if you want all <img src> to go through a fetch proxy/CDN,
- * map them here. For now we keep a conservative no-op that only strips non-http(s) sources.
- */
-export function rewriteImagesToCloudinaryFetch(html: string): string {
-  const normalized = normalizeModelHtml(html);
-  const wrap = (u: string) => u; // no-op CDN wrapper by default
-  return normalized.replace(
-    /<img\b([^>]*?)\bsrc=(["'])([^"']+)\2([^>]*)>/gi,
-    (_full, pre, quote, src, post) => {
-      if (!/^https?:\/\//i.test(src)) {
-        // remove src if it isn't http(s)
-        return `<img${pre}${post}>`;
-      }
-      return `<img${pre} src=${quote}${wrap(src)}${quote}${post}>`;
-    }
+function markdownImagesToImgTags(s: string): string {
+  // Convert simple markdown images  ![alt](url)  to <img ...>
+  // Keep it simple; do not transform existing <img> tags.
+  return s.replace(
+    /!$begin:math:display$([^$end:math:display$]*?)\]$begin:math:text$(https?:\\/\\/[^\\s)]+)$end:math:text$/g,
+    (_full, alt, url) => `<img src="${url}" alt="${String(alt).replace(/"/g, "&quot;")}" />`
   );
+}
+
+function escapeDangerousTags(s: string): string {
+  // Very light safety: strip <script> blocks if they leak in.
+  return s.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
+}
+
+function paragraphize(s: string): string {
+  // Normalize newlines
+  const normalized = s.replace(/\r\n/g, "\n");
+
+  // Split by blank lines to paragraphs; inside a paragraph, single newlines become <br>
+  const parts = normalized
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => `<p>${block.replace(/\n/g, "<br>")}</p>`);
+
+  return parts.join("\n");
+}
+
+/**
+ * formatForDisplay
+ * Cleans raw LLM/plain text and returns HTML meant for `dangerouslySetInnerHTML`.
+ * Purely visual: does not change semantics.
+ */
+export function formatForDisplay(raw: string): string {
+  let s = String(raw ?? "");
+  s = stripCodeFences(s);
+  s = decodeEscapedNewlines(s);
+  s = markdownImagesToImgTags(s);
+  s = escapeDangerousTags(s);
+  s = paragraphize(s);
+  return s;
 }
