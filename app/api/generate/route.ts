@@ -1,58 +1,59 @@
 // app/api/generate/route.ts
-import { NextResponse } from 'next/server'
+import { NextResponse } from 'next/server';
+import { readFile } from 'fs/promises';
+import path from 'path';
 
-export const runtime = 'nodejs'
-export const dynamic = 'force-dynamic'
+// This route runs on Node (not Edge) so we can read the system prompt file.
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-type GenerateReq = { query?: string }
-
-function ok(payload: any) {
-  // Always 200 so the client never throws; errors live in payload.error
-  return NextResponse.json(payload, {
-    status: 200,
+function ok<T>(data: T, status = 200) {
+  return NextResponse.json(data, {
+    status,
     headers: { 'Cache-Control': 'no-store' },
-  })
+  });
+}
+function err(message: string, status = 500) {
+  return ok({ error: message }, status);
 }
 
+type Body = { query?: string };
+
 export async function POST(req: Request) {
-  let query = ''
   try {
-    const body = (await req.json()) as GenerateReq
-    query = (body?.query || '').trim()
-  } catch {
-    return ok({ html: '', data: null, error: 'Invalid JSON body.' })
-  }
-  if (!query) return ok({ html: '', data: null, error: 'Query is required.' })
+    const apiKey = process.env.OPENAI_API_KEY;
+    const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-  // Use OpenAI-compatible endpoint; supports proxy/base override
-  const base = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
-  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
-  const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey) {
+      return err(
+        'Server is missing OPENAI_API_KEY. Add it in Vercel → Settings → Environment Variables and redeploy.',
+        500
+      );
+    }
 
-  // If no key, return a graceful error (don’t throw)
-  if (!apiKey) {
-    return ok({
-      html: '',
-      data: { query, recipes: [] },
-      error:
-        'Missing OPENAI_API_KEY in environment. Add it in Vercel → Settings → Environment Variables and redeploy.',
-    })
-  }
+    let body: Body | null = null;
+    try {
+      body = await req.json();
+    } catch {
+      return err('Invalid JSON. POST { "query": string } with Content-Type: application/json.', 400);
+    }
 
-  const systemPrompt = `Return ONLY a COMPLETE, valid HTML document (<!DOCTYPE html>…</html>) with embedded <style> (no external assets).
-Design language: Food52-inspired—clean, airy, soft palette, bold Playfair-style serif titles, readable sans body, subtle dividers, slight card shadows, mobile-first responsive.
-Content requirements for EACH recipe:
-1) Recipe name (H1/H2).
-2) Chef’s name and a short background paragraph (if available).
-3) A rich, 3–5 paragraph introduction containing history/context, chef philosophy, uniqueness, and cultural/seasonal notes.
-4) Ingredients list (<ul>).
-5) Step-by-step instructions (<ol>): preserve the EXACT step count and roughly the same length/detail as the source; keep all timings/nuances; improve clarity lightly without shortening.
-6) Images: use the REAL absolute image URLs from the source only. If a step has a source image, include one image for that step. If any image fails, keep ALL steps and text; never remove content because an image is bad. Omit gracefully when no valid image exists (no placeholders).
-Accessibility/semantics: proper landmarks, headings hierarchy, alt text.
-Keep CSS scoped to the page. No frameworks, no scripts.`
+    const userQuery = (body?.query || '').trim();
+    if (!userQuery) return err('Query is required.', 400);
 
-  try {
-    const resp = await fetch(`${base}/chat/completions`, {
+    // Load your rich system prompt from a file in the repo root (adjust the path if yours differs)
+    // e.g. /system-prompt.txt
+    const sysPath = path.join(process.cwd(), 'system-prompt.txt');
+    let systemPrompt = '';
+    try {
+      systemPrompt = await readFile(sysPath, 'utf8');
+    } catch {
+      return err('Cannot read system-prompt.txt from project root. Make sure it exists.', 500);
+    }
+
+    // Ask the model to return a COMPLETE HTML document only
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -60,45 +61,48 @@ Keep CSS scoped to the page. No frameworks, no scripts.`
       },
       body: JSON.stringify({
         model,
-        temperature: 0.7,
+        temperature: 0.6,
+        // IMPORTANT: we want raw HTML text back (no JSON wrapping)
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Fetch and render: ${query}` },
+          {
+            role: 'system',
+            content:
+              `${systemPrompt}\n\nSTRICT: Return ONLY a complete HTML document (` +
+              '<!DOCTYPE html> … </html>) with inline <style>. No JSON, no Markdown.',
+          },
+          { role: 'user', content: userQuery },
         ],
       }),
-    })
+    });
 
     if (!resp.ok) {
-      const text = await resp.text().catch(() => '')
-      return ok({
-        html: '',
-        data: { query, recipes: [] },
-        error: `Model request failed (${resp.status}). ${text.slice(0, 400)}`,
-      })
+      const text = await resp.text().catch(() => '');
+      return err(`Model request failed (${resp.status}). ${text.slice(0, 400)}`, 502);
     }
 
-    const json = await resp.json().catch(() => null as any)
-    const content = json?.choices?.[0]?.message?.content
-    const html =
-      typeof content === 'string' && content.trim().startsWith('<')
-        ? content
-        : ''
+    const json = await resp.json().catch(() => null as any);
+    const content: string | undefined = json?.choices?.[0]?.message?.content;
 
-    if (!html) {
-      return ok({
-        html: '',
-        data: { query, recipes: [] },
-        error:
-          'Model did not return a complete HTML document. Check your model/keys.',
-      })
+    if (typeof content !== 'string') {
+      return err('Model returned no content.', 502);
     }
 
-    return ok({ html, data: { query, recipes: [] } })
+    // Validate it's a full HTML document
+    const html = content.trim();
+    const looksLikeDoc =
+      /<!doctype html/i.test(html) &&
+      /<html[\s>]/i.test(html) &&
+      /<\/html>/i.test(html) &&
+      /<head[\s>]/i.test(html) &&
+      /<body[\s>]/i.test(html);
+
+    if (!looksLikeDoc) {
+      return err('Model did not return a complete HTML document.', 502);
+    }
+
+    return ok({ html });
   } catch (e: any) {
-    return ok({
-      html: '',
-      data: { query, recipes: [] },
-      error: `Internal error contacting model: ${e?.message || e}`,
-    })
+    console.error('generate route error:', e);
+    return err('Internal error while generating HTML.', 500);
   }
 }
