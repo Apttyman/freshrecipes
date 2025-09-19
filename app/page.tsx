@@ -1,14 +1,20 @@
 'use client';
 
-import * as React from 'react';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { formatForDisplay } from './lib/html-tools';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { Playfair_Display } from 'next/font/google';
 
-type GeneratedSection = {
-  heading?: string;
-  body?: string;          // raw text from model
-  bodyHtml?: string;      // sometimes the model returns HTML
-  imageUrl?: string | null;
+const playfair = Playfair_Display({
+  weight: ['400', '600', '700', '800', '900'],
+  subsets: ['latin'],
+  variable: '--font-playfair',
+});
+
+/* =========================
+   Types
+   ========================= */
+type RecipeSection = {
+  heading?: string | null;
+  html?: string; // already-safe HTML string
 };
 
 type GeneratedRecipe = {
@@ -17,33 +23,63 @@ type GeneratedRecipe = {
   subtitle?: string | null;
   chef?: string | null;
   heroImage?: string | null;
-  sections: GeneratedSection[];
+  sections: RecipeSection[];
 };
 
-type GenerateResponse =
-  | { recipes: GeneratedRecipe[] }
-  | { error: string };
+/* =========================
+   Helpers
+   ========================= */
 
-export default function Page(): JSX.Element {
-  const [query, setQuery] = useState<string>('');
+// Accepts: [...], {recipes:[...]}, {data:{recipes:[...]}}
+function extractRecipes(payload: any): GeneratedRecipe[] {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.recipes)) return payload.recipes;
+  if (payload.data && Array.isArray(payload.data.recipes)) return payload.data.recipes;
+  return [];
+}
+
+// Turn literal "\n" that sometimes comes from LLMs into real newlines
+function debackslash(str: string | null | undefined): string {
+  if (!str) return '';
+  return String(str).replace(/\\n/g, '\n').replace(/\r/g, '');
+}
+
+// Very small HTML sanitizer for known-safe snippet usage.
+// (If your API already sends safe HTML, you can keep this minimal.)
+function safeHTML(s: string): string {
+  // prevent accidental <script> tags if any text sneaks in
+  return s.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
+}
+
+function nowId(prefix = 'r'): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/* =========================
+   Component
+   ========================= */
+export default function Page() {
+  const [query, setQuery] = useState('');
   const [recipes, setRecipes] = useState<GeneratedRecipe[]>([]);
-  const [busy, setBusy] = useState<boolean>(false);
+  const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
-  const requestIdRef = useRef<number>(0);
+  const requestIdRef = useRef(0);
 
-  // log helper
   const pushLog = useCallback((line: string) => {
-    setLog(prev => [line, ...prev].slice(0, 200));
+    setLog((prev) => [line, ...prev].slice(0, 200));
   }, []);
 
-  const onGenerate = useCallback(async (): Promise<void> => {
+  const onGenerate = useCallback(async () => {
     const q = query.trim();
     if (!q) {
       pushLog('✖ Error: Please type a request first.');
       return;
     }
+
     setBusy(true);
     const rid = ++requestIdRef.current;
+
     try {
       const url = `/api/generate?_=${Date.now()}`;
       pushLog(`→ POST ${url}`);
@@ -56,25 +92,38 @@ export default function Page(): JSX.Element {
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         pushLog(`✖ ${res.status} ${text || res.statusText}`);
-        setBusy(false);
         return;
       }
 
-      const data = (await res.json()) as GenerateResponse;
-      if ('error' in data) {
-        pushLog(`✖ Error: ${data.error}`);
-        setBusy(false);
+      const payload: any = await res.json().catch(() => null);
+
+      if (payload && typeof payload === 'object' && 'error' in payload && payload.error) {
+        pushLog(`✖ Error: ${payload.error}`);
         return;
       }
 
-      // ensure IDs (stable per render)
-      const withIds = data.recipes.map((r, idx) => ({
-        ...r,
-        id: r.id || `r_${Date.now()}_${idx}`,
-        sections: Array.isArray(r.sections) ? r.sections : [],
+      const list = extractRecipes(payload);
+      if (!list.length) {
+        pushLog('✖ Error: API returned no recipes (unexpected response shape).');
+        return;
+      }
+
+      const normalized: GeneratedRecipe[] = list.map((r: any, i: number) => ({
+        id: r.id || nowId('r'),
+        title: r.title ? debackslash(r.title) : 'Untitled',
+        subtitle: r.subtitle ? debackslash(r.subtitle) : null,
+        chef: r.chef ? debackslash(r.chef) : null,
+        heroImage: r.heroImage || null,
+        sections: Array.isArray(r.sections)
+          ? r.sections.map((s: any) => ({
+              heading: s?.heading ? debackslash(s.heading) : null,
+              html: s?.html ? safeHTML(debackslash(s.html)) : '',
+            }))
+          : [],
       }));
-      setRecipes(withIds);
-      pushLog(`✓ Received ${withIds.length} recipe(s).`);
+
+      setRecipes(normalized);
+      pushLog(`✓ Received ${normalized.length} recipe(s).`);
     } catch (err) {
       pushLog(`✖ Error: ${(err as Error)?.message || 'Generation failed'}`);
     } finally {
@@ -82,203 +131,184 @@ export default function Page(): JSX.Element {
     }
   }, [query, pushLog]);
 
-  const onCopyAll = useCallback(() => {
+  const onCopyAll = useCallback(async () => {
     if (!recipes.length) return;
-    const plain = recipes
-      .map(r => {
-        const header = `${r.title}${r.subtitle ? ` — ${r.subtitle}` : ''}`;
-        const chef = r.chef ? `Chef: ${r.chef}` : '';
-        const sections = r.sections
-          .map(s => {
-            const h = s.heading ? `\n\n${s.heading}\n` : '\n\n';
-            const raw = s.bodyHtml || s.body || '';
-            return h + String(raw).replace(/<\/?[^>]+(>|$)/g, ''); // quick strip for copy
-          })
-          .join('');
-        return [header, chef, sections].filter(Boolean).join('\n');
+    const text = recipes
+      .map((r) => {
+        const sectionText = (r.sections || [])
+          .map((s) => [s.heading ? `\n${s.heading}\n` : '', s.html ? s.html.replace(/<[^>]+>/g, '') : ''].join(''))
+          .join('\n');
+        return `# ${r.title}\n${r.subtitle || ''}\n${r.chef ? `Chef: ${r.chef}\n` : ''}${sectionText}`.trim();
       })
-      .join('\n\n––––––––––––––––––––\n\n');
-    navigator.clipboard.writeText(plain).catch(() => {});
-    pushLog('✓ Copied all to clipboard.');
+      .join('\n\n---\n\n');
+
+    await navigator.clipboard.writeText(text);
+    pushLog('✓ Copied all recipes to clipboard.');
   }, [recipes, pushLog]);
 
-  const onSaveAllToArchive = useCallback(async () => {
+  const onSaveAll = useCallback(async () => {
     if (!recipes.length) return;
     try {
-      const res = await fetch('/api/archive', {
+      const url = `/api/archive?_=${Date.now()}`;
+      pushLog(`→ POST ${url}`);
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipes }),
       });
-      if (!res.ok) throw new Error(res.statusText);
-      pushLog('✓ Saved all to archive.');
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        pushLog(`✖ ${res.status} ${t || res.statusText}`);
+        return;
+      }
+      pushLog('✓ Saved all recipes to archive.');
     } catch (e) {
-      pushLog(`✖ Error archiving: ${(e as Error).message}`);
+      pushLog(`✖ Error: ${(e as Error)?.message || 'Archive failed'}`);
     }
   }, [recipes, pushLog]);
 
-  // ONE highlight button per recipe – grabs selection inside that card.
-  const saveHighlight = useCallback(async (recipeId: string) => {
-    const sel = window.getSelection?.();
-    const text = (sel && sel.toString().trim()) || '';
-    if (!text) {
-      pushLog('✖ Select some text inside the recipe card first.');
-      return;
-    }
-    try {
-      const res = await fetch('/api/highlight', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipeId, text }),
-      });
-      if (!res.ok) throw new Error(res.statusText);
-      pushLog('✓ Highlight saved.');
-    } catch (e) {
-      pushLog(`✖ Error saving highlight: ${(e as Error).message}`);
-    }
-  }, [pushLog]);
+  const saveOne = useCallback(
+    async (recipe: GeneratedRecipe) => {
+      try {
+        const url = `/api/archive?_=${Date.now()}`;
+        pushLog(`→ POST ${url} (single)`);
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recipes: [recipe] }),
+        });
+        if (!res.ok) {
+          const t = await res.text().catch(() => '');
+          pushLog(`✖ ${res.status} ${t || res.statusText}`);
+          return;
+        }
+        pushLog(`✓ Saved "${recipe.title}" to archive.`);
+      } catch (e) {
+        pushLog(`✖ Error: ${(e as Error)?.message || 'Save failed'}`);
+      }
+    },
+    [pushLog]
+  );
 
-  const rendered = useMemo(() => {
-    return recipes.map((r) => {
-      return (
-        <article
-          key={r.id}
-          className="rounded-2xl border border-neutral-200 bg-white shadow-sm mb-8 overflow-hidden"
+  const header = useMemo(
+    () => (
+      <header className="mb-6">
+        <h1
+          className={`${playfair.variable} font-serif text-5xl md:text-6xl font-extrabold leading-tight tracking-tight`}
+          style={{ fontFamily: 'var(--font-playfair), ui-serif, Georgia, Cambria, "Times New Roman", Times, serif' }}
         >
-          <div className="p-6 md:p-8">
-            <header className="mb-4">
-              <h2 className="font-display text-3xl md:text-4xl font-black tracking-tight">
-                {r.title}
-              </h2>
-              {r.subtitle ? (
-                <p className="text-neutral-500 mt-1">{r.subtitle}</p>
-              ) : null}
-              {r.chef ? (
-                <p className="text-neutral-700 mt-2"><span className="font-medium">Chef:</span> {r.chef}</p>
-              ) : null}
-            </header>
-
-            {r.heroImage ? (
-              <div className="mb-6">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={r.heroImage}
-                  alt={r.title}
-                  className="w-full h-auto rounded-lg object-cover"
-                />
-              </div>
-            ) : null}
-
-            <div className="space-y-6">
-              {r.sections.map((s, i) => {
-                const heading = s.heading?.trim();
-                const raw = s.bodyHtml ?? s.body ?? '';
-                const html = formatForDisplay(raw);
-                return (
-                  <section key={`${r.id}_s_${i}`}>
-                    {heading ? (
-                      <h3 className="text-xl md:text-2xl font-semibold mb-2">{heading}</h3>
-                    ) : null}
-                    <div
-                      className="prose prose-neutral max-w-none"
-                      dangerouslySetInnerHTML={{ __html: html }}
-                    />
-                    {s.imageUrl ? (
-                      <div className="mt-3">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={s.imageUrl}
-                          alt={heading || r.title}
-                          className="w-full h-auto rounded-md"
-                        />
-                      </div>
-                    ) : null}
-                  </section>
-                );
-              })}
-            </div>
-
-            {/* ONE save button per recipe */}
-            <div className="mt-6 flex justify-start">
-              <button
-                type="button"
-                onClick={() => saveHighlight(r.id)}
-                className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50 active:scale-[0.99] transition"
-                aria-label="Save selected text from this recipe as a highlight"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-                  <path fill="currentColor" d="M6 2h12a2 2 0 0 1 2 2v17.5a.5.5 0 0 1-.79.407L12 17.25l-7.21 4.657A.5.5 0 0 1 4 21.5V4a2 2 0 0 1 2-2z"/>
-                </svg>
-                Save highlight
-              </button>
-            </div>
-          </div>
-        </article>
-      );
-    });
-  }, [recipes, saveHighlight]);
+          FreshRecipes
+        </h1>
+        <p className="mt-2 text-zinc-600">Type a natural-language request. We’ll fetch and format it.</p>
+      </header>
+    ),
+    []
+  );
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-6 md:py-10">
-      <h1 className="text-4xl font-extrabold tracking-tight mb-2">FreshRecipes</h1>
-      <p className="text-neutral-600 mb-6">Type a natural-language request. We’ll fetch and format it.</p>
+    <main className="mx-auto max-w-3xl p-4 md:p-6">
+      {header}
 
-      <div className="mb-4 flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-3">
         <button
-          type="button"
           onClick={onGenerate}
           disabled={busy}
-          className="rounded-2xl bg-black text-white px-5 py-3 text-sm font-semibold disabled:opacity-50"
+          className="rounded-xl bg-black px-5 py-3 text-white font-semibold disabled:opacity-50"
         >
           {busy ? 'Generating…' : 'Generate'}
         </button>
 
         <button
-          type="button"
           onClick={onCopyAll}
           disabled={!recipes.length}
-          className="rounded-2xl border border-neutral-300 px-5 py-3 text-sm font-semibold disabled:opacity-50"
+          className="rounded-xl border px-5 py-3 font-semibold disabled:opacity-50"
         >
           Copy all
         </button>
 
         <button
-          type="button"
-          onClick={onSaveAllToArchive}
+          onClick={onSaveAll}
           disabled={!recipes.length}
-          className="rounded-2xl border border-neutral-300 px-5 py-3 text-sm font-semibold disabled:opacity-50"
+          className="rounded-xl border px-5 py-3 font-semibold disabled:opacity-50"
         >
           Save all to archive
         </button>
       </div>
 
-      <label htmlFor="query" className="sr-only">Request</label>
-      <textarea
-        id="query"
-        value={query}
-        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuery(e.target.value)}
-        placeholder="e.g., 3 chicken recipes"
-        rows={4}
-        className="w-full mb-6 rounded-2xl border border-neutral-300 bg-white px-4 py-3 text-base outline-none focus:ring-2 focus:ring-neutral-800"
-      />
-
-      <h2 className="text-2xl font-extrabold tracking-tight mb-4">Preview</h2>
-      <div aria-live="polite">
-        {recipes.length ? rendered : (
-          <p className="text-neutral-500">No recipes yet. Try typing a request above.</p>
-        )}
+      <div className="mt-4">
+        <textarea
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="e.g., Two chicken recipes with bright, modern plating"
+          className="w-full rounded-2xl border px-4 py-3 min-h-[140px] focus:outline-none focus:ring"
+        />
       </div>
 
-      {/* Request log */}
-      <div className="mt-10 rounded-2xl border border-neutral-200 bg-white p-4 text-sm">
-        <div className="font-semibold mb-2">Request log</div>
-        <ul className="space-y-1">
-          {log.map((line, i) => (
-            <li key={i} className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
-              {line}
-            </li>
-          ))}
-        </ul>
+      <h2 className="mt-8 mb-3 text-2xl font-bold">Preview</h2>
+
+      {!recipes.length && (
+        <p className="text-zinc-500">No recipes yet. Try typing a request above.</p>
+      )}
+
+      <div className="flex flex-col gap-6">
+        {recipes.map((r) => (
+          <article key={r.id} className="rounded-3xl border bg-white p-5 shadow-sm">
+            {/* Title + optional chef/subtitle */}
+            <div className="mb-4">
+              <h3
+                className={`${playfair.variable} font-serif text-3xl md:text-4xl font-extrabold`}
+                style={{ fontFamily: 'var(--font-playfair), ui-serif, Georgia, Cambria, "Times New Roman", Times, serif' }}
+              >
+                {r.title}
+              </h3>
+              {r.subtitle ? (
+                <p className="mt-1 text-zinc-600">{r.subtitle}</p>
+              ) : null}
+              {r.chef ? (
+                <p className="mt-1 text-zinc-500 italic">Chef: {r.chef}</p>
+              ) : null}
+            </div>
+
+            {/* Optional hero image */}
+            {r.heroImage ? (
+              <div className="mb-4 overflow-hidden rounded-2xl border">
+                <img src={r.heroImage} alt="" className="h-auto w-full object-cover" />
+              </div>
+            ) : null}
+
+            {/* Sections (render as safe HTML) */}
+            <div className="flex flex-col gap-5">
+              {r.sections.map((s, idx) => (
+                <section key={idx} className="rounded-2xl border p-4">
+                  {s.heading ? (
+                    <h4 className="mb-2 text-xl font-bold">{s.heading}</h4>
+                  ) : null}
+                  {s.html ? (
+                    <div
+                      className="prose max-w-none whitespace-pre-wrap leading-relaxed"
+                      dangerouslySetInnerHTML={{ __html: safeHTML(debackslash(s.html)) }}
+                    />
+                  ) : null}
+                </section>
+              ))}
+            </div>
+
+            {/* ONE save button per recipe */}
+            <div className="mt-4 flex justify-center">
+              <button
+                onClick={() => saveOne(r)}
+                className="inline-flex items-center gap-2 rounded-2xl border px-4 py-2 font-semibold"
+              >
+                <span aria-hidden>🔖</span> Save highlight
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <h2 className="mt-10 mb-3 text-xl font-bold">Request log</h2>
+      <div className="rounded-2xl border bg-white p-4 font-mono text-sm leading-6 whitespace-pre-wrap">
+        {log.length ? log.join('\n') : '—'}
       </div>
     </main>
   );
