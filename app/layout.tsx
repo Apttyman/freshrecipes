@@ -1,55 +1,158 @@
 // app/layout.tsx
-import "./globals.css";
-import Link from "next/link";
-import type { Metadata } from "next";
+import type { Metadata } from 'next';
+import './globals.css';
 
 export const metadata: Metadata = {
-  title: "FreshRecipes",
-  description: "Fetch chef-grade recipes and render them beautifully.",
+  title: 'FreshRecipes',
+  description: 'Fetches chef-quality recipes and renders full Food52-style HTML.',
 };
-
-export const buttonClass =
-  "inline-flex items-center justify-center rounded-xl px-5 py-3 text-white " +
-  "bg-indigo-600 hover:bg-indigo-600/90 active:bg-indigo-700 " +
-  "shadow-[0_6px_20px_rgba(79,70,229,.3)] transition-colors font-semibold";
-
-export const secondaryButtonClass =
-  "inline-flex items-center justify-center rounded-xl px-5 py-3 " +
-  "bg-white text-neutral-800 border border-neutral-300 hover:bg-neutral-50 transition-colors font-semibold";
-
-export const disabledButtonClass =
-  "inline-flex items-center justify-center rounded-xl px-5 py-3 " +
-  "bg-neutral-100 text-neutral-400 border border-neutral-200 cursor-not-allowed font-semibold";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-dvh bg-neutral-50 text-neutral-900">
-        {/* Header */}
-        <header className="sticky top-0 z-20 border-b border-neutral-200 bg-white/90 backdrop-blur">
-          <div className="mx-auto max-w-5xl px-4 sm:px-6 h-16 flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-3">
-              <span className="h-8 w-8 rounded-xl bg-gradient-to-br from-indigo-400 to-violet-500 grid place-items-center text-white">✶</span>
-              <span className="text-[20px] sm:text-[22px] font-extrabold tracking-tight">FreshRecipes</span>
-            </Link>
-            <Link
-              href="/archive"
-              className={secondaryButtonClass}
-            >
-              🗂️&nbsp;Archive
-            </Link>
+      <head>
+        {/* Playfair for titles */}
+        <link
+          href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&family=Inter:wght@400;500;600&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body>
+        <header className="site-header">
+          <div className="brand">
+            <span className="logo" aria-hidden>✺</span>
+            <span className="brand-text">FreshRecipes</span>
           </div>
+          <a className="archive-chip" href="/archive" aria-label="Open Archive">Archive</a>
         </header>
 
-        {/* Page */}
-        <main className="mx-auto max-w-5xl px-4 sm:px-6 py-8">{children}</main>
+        <main className="site-main">{children}</main>
 
-        {/* Footer */}
-        <footer className="border-t border-neutral-200 bg-white">
-          <div className="mx-auto max-w-5xl px-4 sm:px-6 py-6 text-sm text-neutral-500">
-            © 2025 FreshRecipes
-          </div>
+        <footer className="site-footer">
+          <small>© 2025 FreshRecipes</small>
         </footer>
+
+        <style jsx global>{`
+          :root {
+            --bg: #f9fafb;
+            --card: #ffffff;
+            --ink: #0f172a;
+            --muted: #64748b;
+            --blue: #3b5bfd;
+            --blue-press: #2f49d4;
+            --ring: rgba(59, 91, 253, 0.35);
+            --shadow: 0 10px 24px rgba(2, 6, 23, 0.08), 0 2px 6px rgba(2, 6, 23, 0.06);
+            --radius: 16px;
+          }
+          * { box-sizing: border-box; }
+          html, body { height: 100%; }
+          body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+          }
+          .site-header {
+            position: sticky; top: 0; z-index: 10;
+            background: #fff;
+            box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06);
+            padding: 14px 18px;
+            display: flex; align-items: center; justify-content: space-between;
+          }
+          .brand { display: flex; align-items: center; gap: 10px; }
+          .logo {
+            display: inline-grid; place-items: center;
+            width: 32px; height: 32px; border-radius: 10px;
+            background: radial-gradient(120% 120% at 20% 20%, #ffd29d 0%, #ff7aa2 48%, #7b6bff 100%);
+            color: #fff; font-size: 18px;
+          }
+          .brand-text {
+            font-family: "Playfair Display", serif;
+            font-weight: 800; font-size: 22px; letter-spacing: 0.2px;
+          }
+          .archive-chip {
+            display: inline-flex; align-items: center; justify-content: center;
+            height: 40px; min-width: 104px;
+            padding: 0 16px;
+            border-radius: 999px;
+            background: #111827; color: #fff; text-decoration: none; font-weight: 600;
+            box-shadow: var(--shadow);
+          }
+          .archive-chip:active { transform: translateY(1px); }
+          .site-main { padding: 26px 16px 40px; }
+          .site-footer {
+            padding: 28px 16px; text-align: left; color: var(--muted);
+            border-top: 1px solid rgba(15,23,42,0.06);
+            background: #fff;
+          }
+
+          /* Card + controls */
+          .card {
+            max-width: 760px; margin: 0 auto;
+            background: var(--card); border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 18px;
+          }
+          @media (min-width: 520px) { .card { padding: 22px; } }
+
+          .title-row {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 14px;
+          }
+          .title {
+            display: flex; align-items: center; gap: 10px;
+            font-family: "Playfair Display", serif; font-weight: 800; font-size: 28px;
+          }
+
+          .textarea-wrap {
+            background: #fff;
+            border: 1px solid rgba(15,23,42,0.08);
+            border-radius: 14px; overflow: hidden;
+            box-shadow: inset 0 1px 0 rgba(15,23,42,0.04);
+          }
+          textarea {
+            width: 100%;
+            height: 150px; /* large like your screenshot */
+            display: block; resize: vertical;
+            padding: 18px 16px;
+            border: 0; outline: none;
+            font-size: 18px; line-height: 1.5;
+            color: var(--ink);
+          }
+          textarea::placeholder { color: var(--muted); }
+
+          .btn {
+            appearance: none; border: 0; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 100%; height: 56px; border-radius: 14px;
+            font-weight: 700; font-size: 20px;
+          }
+          .btn-primary {
+            background: var(--blue); color: #fff;
+            box-shadow: 0 10px 20px rgba(59, 91, 253, 0.18), 0 2px 6px rgba(59, 91, 253, 0.12);
+          }
+          .btn-primary:active { background: var(--blue-press); transform: translateY(1px); }
+          .btn-ghost {
+            background: #f3f4f6; color: #6b7280;
+            border: 1px solid rgba(15,23,42,0.06);
+          }
+          .btn-link {
+            width: 100%;
+            display: inline-flex; align-items: center; justify-content: center;
+            height: 56px; border-radius: 14px;
+            text-decoration: none; font-weight: 700; font-size: 20px;
+            color: #111827; background: #eef2ff; border: 1px solid rgba(79,70,229,0.15);
+          }
+
+          .stack { display: grid; gap: 14px; }
+          .error {
+            max-width: 760px; margin: 16px auto 0;
+            background: #fff; border: 1px solid rgba(220, 38, 38, 0.25);
+            color: #991b1b; border-radius: 12px; padding: 14px 16px;
+            box-shadow: var(--shadow);
+          }
+          .error b { margin-right: 6px; }
+        `}</style>
       </body>
     </html>
   );
