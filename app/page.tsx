@@ -79,16 +79,16 @@ export default function HomePage() {
 
   return (
     <div className="page">
-      {/* Header (unchanged) */}
+      {/* Header — single Archive button */}
       <header className="header">
         <div className="brand">
           <span className="logo" aria-hidden>✺</span>
           <span className="name">FreshRecipes</span>
         </div>
-        <a className="link" href="/archive">Archive</a>
+        <a className="btn link" href="/archive" aria-label="Open archive">Archive</a>
       </header>
 
-      {/* Form card (ONLY Generate button; extra Save removed) */}
+      {/* Input card — bigger textarea, single Generate button, no extra Save, no inner Archive */}
       <section className="card">
         <textarea
           className="input"
@@ -103,45 +103,43 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Error (unchanged) */}
+      {/* Error box */}
       {res?.error && (
         <section className="card">
           <div className="error"><strong>Error:</strong> {res.error}</div>
         </section>
       )}
 
-      {/* Rendered result (keeps its Save & Archive controls) */}
+      {/* Rendered result — includes Save + Archive (kept) */}
       {res?.html && (
         <section className="card">
           <div className="row end">
             <button className="btn" onClick={saveAllToArchive}>Save</button>
-            <a className="btn primary" href="/archive">Archive</a>
+            <a className="btn" href="/archive">Archive</a>
           </div>
           <div ref={htmlRef} className="render" dangerouslySetInnerHTML={{ __html: res.html }} />
         </section>
       )}
 
-      {/* Footer with extra links removed (no Archive/Deploy here) */}
-      <footer className="footer">
-        © {new Date().getFullYear()} FreshRecipes
-      </footer>
+      {/* Footer — ONLY copyright (no Archive/Deploy links) */}
+      <footer className="footer">© {new Date().getFullYear()} FreshRecipes</footer>
 
-      {/* very light baseline styles you already had; not a redesign */}
       <style jsx>{`
         .page { max-width: 860px; margin: 0 auto; padding: 16px; }
-        .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
+
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 0 12px; }
         .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; }
         .logo { width: 28px; height: 28px; display: grid; place-items: center; background: #6c5ce7; color: #fff; border-radius: 8px; font-size: 16px; }
         .name { font-family: 'Playfair Display', ui-serif, Georgia, serif; font-size: 20px; }
-        .link { text-decoration: none; font-weight: 700; }
 
-        .card { background: #fff; border: 1px solid #eef0f6; border-radius: 12px; padding: 14px; margin-top: 12px; }
-        .input { width: 100%; min-height: 120px; padding: 12px; border-radius: 10px; border: 1px solid #e5e7eb; outline: none; }
-        .row { display: flex; gap: 10px; margin-top: 10px; }
+        .card { background: #fff; border: 1px solid #eef0f6; border-radius: 12px; padding: 16px; margin-top: 14px; box-shadow: 0 3px 12px rgba(0,0,0,0.03); }
+        .input { width: 100%; min-height: 160px; padding: 14px; border-radius: 10px; border: 1px solid #e5e7eb; outline: none; font-size: 16px; }
+        .row { display: flex; gap: 10px; margin-top: 12px; }
         .row.end { justify-content: flex-end; }
 
-        .btn { height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; font-weight: 800; cursor: pointer; }
+        .btn { height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; font-weight: 800; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
         .btn:disabled { opacity: .5; cursor: not-allowed; }
+        .btn.link { background: #fff; }
         .primary { background: #4f5cff; color: #fff; border-color: #4f5cff; }
 
         .error { color: #b00020; }
