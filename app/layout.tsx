@@ -1,47 +1,27 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
-const geistMono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-geist-mono"
-});
-
 export const metadata: Metadata = {
-  title: "FreshRecipes — Generate chef-quality recipes",
-  description:
-    "Generate clear, well-formatted recipes with copy/print tools, mobile-first layout, and robust image handling.",
-  applicationName: "FreshRecipes",
-  metadataBase: new URL("https://freshrecipes.vercel.app"),
-  openGraph: {
-    title: "FreshRecipes",
-    description:
-      "Generate chef-quality recipes with fast UX and robust image handling.",
-    url: "https://freshrecipes.vercel.app",
-    siteName: "FreshRecipes",
-    type: "website"
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "FreshRecipes",
-    description:
-      "Generate chef-quality recipes with fast UX and robust image handling."
-  },
-  themeColor: "#2e5bff"
+  title: "FreshRecipes",
+  description: "Type a natural-language request. We’ll fetch and format it.",
+  icons: { icon: "/favicon.ico" },
 };
 
 export default function RootLayout({
-  children
+  children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <header role="banner" />
+    <html lang="en" className="no-dark">
+      <head>
+        {/* Force light scheme for Safari/iOS and form controls */}
+        <meta name="color-scheme" content="light" />
+        {/* Older iOS hint */}
+        <meta name="supported-color-schemes" content="light" />
+      </head>
+      <body className="min-h-screen bg-slate-50 text-slate-900 antialiased">
         {children}
-        <footer role="contentinfo" />
       </body>
     </html>
   );
