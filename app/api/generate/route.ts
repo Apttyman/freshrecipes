@@ -1,52 +1,73 @@
 // app/api/generate/route.ts
 import { NextResponse } from 'next/server'
+import { readFile } from 'fs/promises'
+import { join } from 'path'
 
-// If you use the Node OpenAI SDK (or any Node-only lib), do this:
 export const runtime = 'nodejs'
-// Disable caching for this route:
 export const dynamic = 'force-dynamic'
 
-type GenerateRequest = {
-  query: string
-}
-
-type Recipe = {
-  id: string
-  title: string
-  author?: string
-  sections: Array<{ heading: string; html: string }>
-  imageUrl?: string | null
-}
+type GenerateRequest = { query: string }
 
 function ok<T>(data: T) {
-  return NextResponse.json(data, { status: 200, headers: { 'Cache-Control': 'no-store' } })
+  return NextResponse.json(data, {
+    status: 200,
+    headers: { 'Cache-Control': 'no-store' },
+  })
 }
 function bad(message: string, status = 400) {
-  return NextResponse.json({ recipes: [], error: message }, { status, headers: { 'Cache-Control': 'no-store' } })
+  return NextResponse.json(
+    { html: '', error: message },
+    { status, headers: { 'Cache-Control': 'no-store' } }
+  )
+}
+
+async function loadSystemPrompt(): Promise<string> {
+  // Try a few likely locations for your system-prompt.txt
+  const candidates = [
+    join(process.cwd(), 'system-prompt.txt'),
+    join(process.cwd(), 'app', 'lib', 'system-prompt.txt'),
+    join(process.cwd(), 'app', 'system-prompt.txt'),
+  ]
+  for (const p of candidates) {
+    try {
+      const s = await readFile(p, 'utf8')
+      if (s?.trim()) return s
+    } catch {}
+  }
+  // Fallback (keeps the route functional if the file moves)
+  return `You are to fetch {input directives} and return a COMPLETE valid HTML document
+  (<!DOCTYPE html> … </html>) that matches the Food52-like styling, chef bio,
+  multi-paragraph intro, ingredients, and exact step count. Use only real image
+  URLs from the source; omit images if not available. Do NOT return Markdown or JSON.`
 }
 
 export async function POST(req: Request) {
   try {
-    // 1) Validate env first
+    // 1) Validate env
     const apiKey = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY
     if (!apiKey) {
-      // Return a shaped response so the client never crashes
-      return bad('Missing model API key in server environment (OPENAI_API_KEY or ANTHROPIC_API_KEY). Set it in Vercel → Settings → Environment Variables (Production) and redeploy.', 500)
+      return bad(
+        'Missing model API key (OPENAI_API_KEY or ANTHROPIC_API_KEY). Set in Vercel → Settings → Environment Variables and redeploy.',
+        500
+      )
     }
 
-    // 2) Parse body safely
+    // 2) Parse body
     let body: GenerateRequest | null = null
     try {
       body = await req.json()
     } catch {
-      return bad('Invalid JSON body. The client must POST application/json with { "query": string }', 400)
+      return bad('Invalid JSON body. POST {"query": string}', 400)
     }
     const query = (body?.query || '').trim()
     if (!query) return bad('Query is required.', 400)
 
-    // 3) Call your model (replace this block with your real provider call)
-    // Example with fetch (Edge/Node safe). Adjust URL/model as needed.
-    const providerUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/chat/completions'
+    // 3) Load your ORIGINAL system prompt from file
+    const systemPrompt = await loadSystemPrompt()
+
+    // 4) Call OpenAI (adjust if you prefer Anthropic)
+    const providerUrl =
+      process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/chat/completions'
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
     const resp = await fetch(providerUrl, {
@@ -57,36 +78,35 @@ export async function POST(req: Request) {
       },
       body: JSON.stringify({
         model,
+        // IMPORTANT: do NOT force JSON here — your prompt returns HTML.
         messages: [
-          { role: 'system', content: 'Return a JSON object with an array "recipes". Each recipe has id, title, author (optional), sections [{heading, html}], imageUrl (optional).' },
-          { role: 'user', content: `Create 1–3 refined recipes for: ${query}. Return ONLY JSON.` },
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content:
+              `Fetch ${query}. Return ONLY a complete, valid HTML document per the system prompt. ` +
+              `No Markdown fences, no JSON, no explanations.`,
+          },
         ],
         temperature: 0.7,
-        response_format: { type: 'json_object' },
       }),
     })
 
     if (!resp.ok) {
       const txt = await resp.text().catch(() => '')
-      return bad(`Model request failed (${resp.status}). ${txt.slice(0, 300)}`, 502)
+      return bad(`Model request failed (${resp.status}). ${txt.slice(0, 400)}`, 502)
     }
 
-    // 4) Parse model JSON safely
     const json = await resp.json().catch(() => null as any)
-    // If using OpenAI chat, the JSON is inside choices[0].message.content
-    const content = json?.choices?.[0]?.message?.content
-    let data: any = null
-    try {
-      data = typeof content === 'string' ? JSON.parse(content) : content
-    } catch {
-      return bad('Model did not return valid JSON content.', 502)
+    const html = json?.choices?.[0]?.message?.content ?? ''
+
+    if (typeof html !== 'string' || !html.toLowerCase().includes('<html')) {
+      return bad('Model did not return a complete HTML document.', 502)
     }
 
-    // 5) Normalize shape for the UI
-    const recipes: Recipe[] = Array.isArray(data?.recipes) ? data.recipes : []
-    return ok({ recipes })
+    // 5) Send the raw HTML to the client
+    return ok({ html })
   } catch (err: any) {
-    // Final catch-all — never let the route crash
     console.error('generate route error:', err)
     return bad('Internal error while generating recipes.', 500)
   }
