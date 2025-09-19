@@ -1,294 +1,285 @@
 'use client';
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { formatForDisplay } from '@/app/lib/html-tools';
+import * as React from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { formatForDisplay } from './lib/html-tools';
 
-/**
- * NOTE ON ASSUMPTIONS (kept compatible with your current API):
- * - POST /api/generate  expects JSON { query: string } and returns either:
- *     a) { html: string }   OR
- *     b) raw HTML (text/plain)
- *   We handle both.
- * - “Save all to archive” POSTs to /api/archive with { query, html }.
- * - “Save highlight” POSTs to /api/highlight with { query, html } for ONE recipe.
- * If your endpoints are slightly different, adjust the urls or payload keys below;
- * the UI contract stays the same.
- */
-
-type RequestLogItem = {
-  method: string;
-  url: string;
-  status?: number;
-  error?: string;
+type GeneratedSection = {
+  heading?: string;
+  body?: string;          // raw text from model
+  bodyHtml?: string;      // sometimes the model returns HTML
+  imageUrl?: string | null;
 };
 
-export default function Page() {
-  const [query, setQuery] = useState('');
-  const [recipesHTML, setRecipesHTML] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<RequestLogItem[]>([]);
-  const previewRef = useRef<HTMLDivElement | null>(null);
+type GeneratedRecipe = {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  chef?: string | null;
+  heroImage?: string | null;
+  sections: GeneratedSection[];
+};
 
-  const logRequest = useCallback((entry: RequestLogItem) => {
-    setLog((l) => [entry, ...l].slice(0, 25));
+type GenerateResponse =
+  | { recipes: GeneratedRecipe[] }
+  | { error: string };
+
+export default function Page(): JSX.Element {
+  const [query, setQuery] = useState<string>('');
+  const [recipes, setRecipes] = useState<GeneratedRecipe[]>([]);
+  const [busy, setBusy] = useState<boolean>(false);
+  const [log, setLog] = useState<string[]>([]);
+  const requestIdRef = useRef<number>(0);
+
+  // log helper
+  const pushLog = useCallback((line: string) => {
+    setLog(prev => [line, ...prev].slice(0, 200));
   }, []);
 
-  // --- Utilities -------------------------------------------------------------
-
-  function splitIntoRecipes(rawHtml: string): string[] {
-    // Prefer well-formed <article> wrappers (one per recipe)
-    try {
-      const doc = new DOMParser().parseFromString(rawHtml, 'text/html');
-      const articles = Array.from(doc.querySelectorAll('article'));
-      if (articles.length > 0) {
-        return articles.map((a) => a.outerHTML);
-      }
-    } catch {
-      // fall through to heuristic
+  const onGenerate = useCallback(async (): Promise<void> => {
+    const q = query.trim();
+    if (!q) {
+      pushLog('✖ Error: Please type a request first.');
+      return;
     }
-
-    // Fallback: try a very light-weight split if authoring forgot <article>
-    // Heuristic: h1/h2 sections as recipe boundaries
-    const chunks = rawHtml.split(/(?=<h1\b|<h2\b)/i).map((s) => s.trim()).filter(Boolean);
-    if (chunks.length > 1) {
-      return chunks.map((chunk) => `<article>${chunk}</article>`);
-    }
-
-    // If nothing to split, treat as a single recipe block
-    return [`<article>${rawHtml}</article>`];
-  }
-
-  function normalizeResponseText(text: string): string {
-    // Some models return objects as JSON; some return pure HTML.
-    // If it parses and has an `html` key, use it. Otherwise the text IS the html.
-    try {
-      const obj = JSON.parse(text);
-      if (obj && typeof obj.html === 'string') return obj.html;
-    } catch {
-      /* text is plain HTML */
-    }
-    return text;
-  }
-
-  // --- Actions ---------------------------------------------------------------
-
-  const handleGenerate = useCallback(async () => {
-    if (!query.trim()) return;
-
     setBusy(true);
-    setRecipesHTML([]);
+    const rid = ++requestIdRef.current;
     try {
-      const url = '/api/generate';
-      logRequest({ method: 'POST', url });
-
+      const url = `/api/generate?_=${Date.now()}`;
+      pushLog(`→ POST ${url}`);
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
       });
 
-      const text = await res.text();
-      const normalizedHtml = normalizeResponseText(text);
-
       if (!res.ok) {
-        logRequest({ method: 'POST', url, status: res.status, error: normalizedHtml || 'Generation failed' });
+        const text = await res.text().catch(() => '');
+        pushLog(`✖ ${res.status} ${text || res.statusText}`);
         setBusy(false);
         return;
       }
 
-      const parts = splitIntoRecipes(normalizedHtml);
-      setRecipesHTML(parts);
-      logRequest({ method: 'POST', url, status: res.status });
-      setTimeout(() => {
-        previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 50);
-    } catch (err: any) {
-      logRequest({ method: 'POST', url: '/api/generate', error: err?.message || 'Load failed' });
-    } finally {
-      setBusy(false);
-    }
-  }, [query, logRequest]);
-
-  const handleCopyAll = useCallback(async () => {
-    if (!recipesHTML.length) return;
-    const all = recipesHTML.join('\n\n');
-    await navigator.clipboard.writeText(all);
-  }, [recipesHTML]);
-
-  const handleSaveAll = useCallback(async () => {
-    if (!recipesHTML.length) return;
-    const url = '/api/archive';
-    try {
-      logRequest({ method: 'POST', url });
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query, html: recipesHTML.join('\n\n') }),
-      });
-      const msg = await res.text();
-      if (!res.ok) {
-        logRequest({ method: 'POST', url, status: res.status, error: msg || 'Save failed' });
+      const data = (await res.json()) as GenerateResponse;
+      if ('error' in data) {
+        pushLog(`✖ Error: ${data.error}`);
+        setBusy(false);
         return;
       }
-      logRequest({ method: 'POST', url, status: res.status });
-    } catch (err: any) {
-      logRequest({ method: 'POST', url, error: err?.message || 'Save failed' });
+
+      // ensure IDs (stable per render)
+      const withIds = data.recipes.map((r, idx) => ({
+        ...r,
+        id: r.id || `r_${Date.now()}_${idx}`,
+        sections: Array.isArray(r.sections) ? r.sections : [],
+      }));
+      setRecipes(withIds);
+      pushLog(`✓ Received ${withIds.length} recipe(s).`);
+    } catch (err) {
+      pushLog(`✖ Error: ${(err as Error)?.message || 'Generation failed'}`);
+    } finally {
+      if (requestIdRef.current === rid) setBusy(false);
     }
-  }, [recipesHTML, query, logRequest]);
+  }, [query, pushLog]);
 
-  const handleSaveHighlight = useCallback(
-    async (index: number) => {
-      const url = '/api/highlight';
-      const html = recipesHTML[index];
-      try {
-        logRequest({ method: 'POST', url });
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ query, html }),
-        });
-        const msg = await res.text();
-        if (!res.ok) {
-          logRequest({ method: 'POST', url, status: res.status, error: msg || 'Save failed' });
-          return;
-        }
-        logRequest({ method: 'POST', url, status: res.status });
-      } catch (err: any) {
-        logRequest({ method: 'POST', url, error: err?.message || 'Save failed' });
-      }
-    },
-    [recipesHTML, query, logRequest]
-  );
+  const onCopyAll = useCallback(() => {
+    if (!recipes.length) return;
+    const plain = recipes
+      .map(r => {
+        const header = `${r.title}${r.subtitle ? ` — ${r.subtitle}` : ''}`;
+        const chef = r.chef ? `Chef: ${r.chef}` : '';
+        const sections = r.sections
+          .map(s => {
+            const h = s.heading ? `\n\n${s.heading}\n` : '\n\n';
+            const raw = s.bodyHtml || s.body || '';
+            return h + String(raw).replace(/<\/?[^>]+(>|$)/g, ''); // quick strip for copy
+          })
+          .join('');
+        return [header, chef, sections].filter(Boolean).join('\n');
+      })
+      .join('\n\n––––––––––––––––––––\n\n');
+    navigator.clipboard.writeText(plain).catch(() => {});
+    pushLog('✓ Copied all to clipboard.');
+  }, [recipes, pushLog]);
 
-  const renderedCards = useMemo(() => {
-    return recipesHTML.map((raw, idx) => {
-      const html = formatForDisplay(raw);
+  const onSaveAllToArchive = useCallback(async () => {
+    if (!recipes.length) return;
+    try {
+      const res = await fetch('/api/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipes }),
+      });
+      if (!res.ok) throw new Error(res.statusText);
+      pushLog('✓ Saved all to archive.');
+    } catch (e) {
+      pushLog(`✖ Error archiving: ${(e as Error).message}`);
+    }
+  }, [recipes, pushLog]);
+
+  // ONE highlight button per recipe – grabs selection inside that card.
+  const saveHighlight = useCallback(async (recipeId: string) => {
+    const sel = window.getSelection?.();
+    const text = (sel && sel.toString().trim()) || '';
+    if (!text) {
+      pushLog('✖ Select some text inside the recipe card first.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/highlight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipeId, text }),
+      });
+      if (!res.ok) throw new Error(res.statusText);
+      pushLog('✓ Highlight saved.');
+    } catch (e) {
+      pushLog(`✖ Error saving highlight: ${(e as Error).message}`);
+    }
+  }, [pushLog]);
+
+  const rendered = useMemo(() => {
+    return recipes.map((r) => {
       return (
         <article
-          key={idx}
-          className="rounded-3xl border border-slate-200 bg-white shadow-sm ring-1 ring-black/5 overflow-hidden"
+          key={r.id}
+          className="rounded-2xl border border-neutral-200 bg-white shadow-sm mb-8 overflow-hidden"
         >
-          <div className="p-6 sm:p-8">
-            {/* the recipe body */}
-            <div className="prose max-w-none prose-headings:font-playfair prose-h1:text-4xl sm:prose-h1:text-5xl prose-h2:text-2xl prose-h3:text-xl">
-              <div dangerouslySetInnerHTML={{ __html: html }} />
+          <div className="p-6 md:p-8">
+            <header className="mb-4">
+              <h2 className="font-display text-3xl md:text-4xl font-black tracking-tight">
+                {r.title}
+              </h2>
+              {r.subtitle ? (
+                <p className="text-neutral-500 mt-1">{r.subtitle}</p>
+              ) : null}
+              {r.chef ? (
+                <p className="text-neutral-700 mt-2"><span className="font-medium">Chef:</span> {r.chef}</p>
+              ) : null}
+            </header>
+
+            {r.heroImage ? (
+              <div className="mb-6">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={r.heroImage}
+                  alt={r.title}
+                  className="w-full h-auto rounded-lg object-cover"
+                />
+              </div>
+            ) : null}
+
+            <div className="space-y-6">
+              {r.sections.map((s, i) => {
+                const heading = s.heading?.trim();
+                const raw = s.bodyHtml ?? s.body ?? '';
+                const html = formatForDisplay(raw);
+                return (
+                  <section key={`${r.id}_s_${i}`}>
+                    {heading ? (
+                      <h3 className="text-xl md:text-2xl font-semibold mb-2">{heading}</h3>
+                    ) : null}
+                    <div
+                      className="prose prose-neutral max-w-none"
+                      dangerouslySetInnerHTML={{ __html: html }}
+                    />
+                    {s.imageUrl ? (
+                      <div className="mt-3">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={s.imageUrl}
+                          alt={heading || r.title}
+                          className="w-full h-auto rounded-md"
+                        />
+                      </div>
+                    ) : null}
+                  </section>
+                );
+              })}
             </div>
 
-            {/* ONE Save highlight per recipe */}
-            <div className="mt-6 flex">
+            {/* ONE save button per recipe */}
+            <div className="mt-6 flex justify-start">
               <button
                 type="button"
-                onClick={() => handleSaveHighlight(idx)}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-slate-900 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-black"
-                aria-label="Save this recipe to highlights"
+                onClick={() => saveHighlight(r.id)}
+                className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50 active:scale-[0.99] transition"
+                aria-label="Save selected text from this recipe as a highlight"
               >
-                {/* inline svg bookmark */}
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path
-                    d="M7 3h10a1 1 0 0 1 1 1v16l-6-3-6 3V4a1 1 0 0 1 1-1z"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="currentColor" d="M6 2h12a2 2 0 0 1 2 2v17.5a.5.5 0 0 1-.79.407L12 17.25l-7.21 4.657A.5.5 0 0 1 4 21.5V4a2 2 0 0 1 2-2z"/>
                 </svg>
-                <span className="font-medium">Save highlight</span>
+                Save highlight
               </button>
             </div>
           </div>
         </article>
       );
     });
-  }, [recipesHTML, handleSaveHighlight]);
-
-  // --- UI --------------------------------------------------------------------
+  }, [recipes, saveHighlight]);
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-10">
-      <h1 className="text-4xl font-extrabold tracking-tight text-slate-900">FreshRecipes</h1>
-      <p className="mt-2 text-slate-600">Type a natural-language request. We’ll fetch and format it.</p>
+    <main className="mx-auto max-w-3xl px-4 py-6 md:py-10">
+      <h1 className="text-4xl font-extrabold tracking-tight mb-2">FreshRecipes</h1>
+      <p className="text-neutral-600 mb-6">Type a natural-language request. We’ll fetch and format it.</p>
 
-      <div className="mt-6 flex flex-wrap items-center gap-3">
-        <a
-          href="/archive"
-          className="inline-flex items-center rounded-2xl bg-slate-900 px-5 py-3 text-white shadow-sm ring-1 ring-black/5 hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-black"
-        >
-          Open Archive
-        </a>
-      </div>
-
-      <div className="mt-4">
-        <label htmlFor="q" className="sr-only">
-          Query
-        </label>
-        <textarea
-          id="q"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="e.g. 3 top-chef pasta recipes"
-          rows={4}
-          className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-base shadow-sm focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-black"
-        />
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-3">
+      <div className="mb-4 flex flex-wrap gap-3">
         <button
           type="button"
-          onClick={handleGenerate}
+          onClick={onGenerate}
           disabled={busy}
-          className="inline-flex items-center rounded-2xl bg-slate-900 px-5 py-3 text-white shadow-sm ring-1 ring-black/5 hover:bg-slate-800 disabled:opacity-50"
+          className="rounded-2xl bg-black text-white px-5 py-3 text-sm font-semibold disabled:opacity-50"
         >
           {busy ? 'Generating…' : 'Generate'}
         </button>
 
         <button
           type="button"
-          onClick={handleCopyAll}
-          disabled={!recipesHTML.length}
-          className="inline-flex items-center rounded-2xl bg-white px-5 py-3 text-slate-900 shadow-sm ring-1 ring-black/5 hover:bg-slate-50 disabled:opacity-50"
+          onClick={onCopyAll}
+          disabled={!recipes.length}
+          className="rounded-2xl border border-neutral-300 px-5 py-3 text-sm font-semibold disabled:opacity-50"
         >
           Copy all
         </button>
 
         <button
           type="button"
-          onClick={handleSaveAll}
-          disabled={!recipesHTML.length}
-          className="inline-flex items-center rounded-2xl bg-white px-5 py-3 text-slate-900 shadow-sm ring-1 ring-black/5 hover:bg-slate-50 disabled:opacity-50"
+          onClick={onSaveAllToArchive}
+          disabled={!recipes.length}
+          className="rounded-2xl border border-neutral-300 px-5 py-3 text-sm font-semibold disabled:opacity-50"
         >
           Save all to archive
         </button>
       </div>
 
-      <section ref={previewRef} className="mt-10">
-        <h2 className="text-3xl font-extrabold tracking-tight text-slate-900">Preview</h2>
+      <label htmlFor="query" className="sr-only">Request</label>
+      <textarea
+        id="query"
+        value={query}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setQuery(e.target.value)}
+        placeholder="e.g., 3 chicken recipes"
+        rows={4}
+        className="w-full mb-6 rounded-2xl border border-neutral-300 bg-white px-4 py-3 text-base outline-none focus:ring-2 focus:ring-neutral-800"
+      />
 
-        <div className="mt-6 grid grid-cols-1 gap-6">
-          {renderedCards.length > 0 ? (
-            renderedCards
-          ) : (
-            <div className="text-slate-500">Your formatted recipes will appear here.</div>
-          )}
-        </div>
-      </section>
+      <h2 className="text-2xl font-extrabold tracking-tight mb-4">Preview</h2>
+      <div aria-live="polite">
+        {recipes.length ? rendered : (
+          <p className="text-neutral-500">No recipes yet. Try typing a request above.</p>
+        )}
+      </div>
 
-      {/* Request log (developer friendly, matches your earlier UI) */}
-      <section className="mt-10">
-        <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <summary className="cursor-pointer text-lg font-semibold">Request log</summary>
-          <ul className="mt-3 space-y-2 text-sm font-mono">
-            {log.map((r, i) => (
-              <li key={i} className="rounded-lg bg-slate-50 p-3">
-                <div>
-                  → {r.method} <span className="break-all">{r.url}</span>
-                </div>
-                {r.status && <div>＊ {r.status}</div>}
-                {r.error && <div className="text-rose-600">✖ {r.error}</div>}
-              </li>
-            ))}
-          </ul>
-        </details>
-      </section>
+      {/* Request log */}
+      <div className="mt-10 rounded-2xl border border-neutral-200 bg-white p-4 text-sm">
+        <div className="font-semibold mb-2">Request log</div>
+        <ul className="space-y-1">
+          {log.map((line, i) => (
+            <li key={i} className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
+              {line}
+            </li>
+          ))}
+        </ul>
+      </div>
     </main>
   );
 }
