@@ -14,24 +14,17 @@ function bad(message: string, status = 400) {
   return NextResponse.json({ recipes: [], error: message }, { status, headers: { 'Cache-Control': 'no-store' } })
 }
 
-// --- Load system prompt bundled with this route
+// Load system prompt bundled with this route (app/prompt/system-prompt.txt)
 async function loadSystemPrompt(): Promise<string> {
-  // The txt file lives at app/prompt/system-prompt.txt
-  // This route is at app/api/generate/route.ts
-  // So the relative path is ../../prompt/system-prompt.txt
   try {
+    // route.ts => app/api/generate/route.ts
+    // prompt file => app/prompt/system-prompt.txt
     const url = new URL('../../prompt/system-prompt.txt', import.meta.url)
     return await readFile(url, 'utf8')
   } catch (e) {
-    // Fallbacks for local dev only
-    try {
-      const url2 = new URL('../../../prompt/system-prompt.txt', import.meta.url)
-      return await readFile(url2, 'utf8')
-    } catch {}
-    // Final fallback: allow env override
-    const fromEnv = process.env.SYSTEM_PROMPT
-    if (fromEnv) return fromEnv
-    throw new Error('system-prompt.txt not found next to this route (../../prompt/system-prompt.txt).')
+    // Optional env override
+    if (process.env.SYSTEM_PROMPT) return process.env.SYSTEM_PROMPT
+    throw new Error('system-prompt.txt not found at app/prompt/system-prompt.txt')
   }
 }
 
@@ -81,7 +74,7 @@ export async function POST(req: Request) {
     try {
       const parsed = typeof content === 'string' ? JSON.parse(content) : content
       if (Array.isArray(parsed?.recipes)) return ok({ recipes: parsed.recipes })
-    } catch { /* not JSON */ }
+    } catch { /* content wasn't JSON */ }
 
     return bad('Model did not return a complete HTML document or recipes.', 502)
   } catch (err: any) {
