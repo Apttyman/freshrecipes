@@ -1,0 +1,25 @@
+name: Fix Missing clsx Dependency
+
+on:
+  workflow_dispatch: # lets you trigger manually from GitHub Actions tab
+
+jobs:
+  add-clsx:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install clsx
+        run: |
+          npm install clsx --save
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "Add clsx dependency via GitHub Actions" || echo "No changes to commit"
+          git push
