@@ -43,7 +43,7 @@ export default function HomePage() {
       img.referrerPolicy = 'no-referrer'
       img.crossOrigin = 'anonymous'
       img.addEventListener('error', () => {
-        // keep steps/text; just hide busted image
+        // keep steps/text visible; just hide the busted image
         img.style.opacity = '0'
       })
     })
@@ -64,7 +64,7 @@ export default function HomePage() {
       if (!r.ok) throw new Error('bad status')
       alert('Saved to Archive')
     } catch {
-      // fallback download
+      // Fallback: download HTML so nothing is lost
       const blob = new Blob([res!.html], { type: 'text/html;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -79,7 +79,7 @@ export default function HomePage() {
 
   return (
     <div className="page">
-      {/* Header — single Archive button */}
+      {/* SINGLE header (no duplicate brand rows) */}
       <header className="header">
         <div className="brand">
           <span className="logo" aria-hidden>✺</span>
@@ -88,7 +88,7 @@ export default function HomePage() {
         <a className="btn link" href="/archive" aria-label="Open archive">Archive</a>
       </header>
 
-      {/* Input card — bigger textarea, single Generate button, no extra Save, no inner Archive */}
+      {/* Input card */}
       <section className="card">
         <textarea
           className="input"
@@ -110,7 +110,7 @@ export default function HomePage() {
         </section>
       )}
 
-      {/* Rendered result — includes Save + Archive (kept) */}
+      {/* Result card */}
       {res?.html && (
         <section className="card">
           <div className="row end">
@@ -121,7 +121,7 @@ export default function HomePage() {
         </section>
       )}
 
-      {/* Footer — ONLY copyright (no Archive/Deploy links) */}
+      {/* Footer — only copyright */}
       <footer className="footer">© {new Date().getFullYear()} FreshRecipes</footer>
 
       <style jsx>{`
