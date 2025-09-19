@@ -1,153 +1,115 @@
-'use client'
+'use client';
 
-import React from 'react'
-
-type ResultShape = {
-  html: string
-  data: { query: string; recipes: any[] } | null
-  error?: string
-}
+import { useState } from 'react';
 
 export default function HomePage() {
-  const [query, setQuery] = React.useState('')
-  const [loading, setLoading] = React.useState(false)
-  const [res, setRes] = React.useState<ResultShape | null>(null)
-  const htmlRef = React.useRef<HTMLDivElement>(null)
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [resultHTML, setResultHTML] = useState<string | null>(null);
 
-  async function generate() {
-    if (!query.trim()) return
-    setLoading(true)
-    setRes(null)
-    try {
-      const r = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
-      })
-      const json = (await r.json()) as ResultShape
-      setRes(json)
-      if (json?.html) requestAnimationFrame(enhanceImages)
-    } catch {
-      setRes({ html: '', data: null, error: 'Request failed. Try again.' })
-    } finally {
-      setLoading(false)
+  async function handleGenerate() {
+    setErrorMsg(null);
+    setResultHTML(null);
+
+    const q = query.trim();
+    if (!q) {
+      setErrorMsg('Please enter what you want to fetch.');
+      return;
     }
-  }
 
-  function enhanceImages() {
-    const root = htmlRef.current
-    if (!root) return
-    root.querySelectorAll<HTMLImageElement>('img').forEach((img) => {
-      img.loading = 'lazy'
-      img.decoding = 'async'
-      img.referrerPolicy = 'no-referrer'
-      img.crossOrigin = 'anonymous'
-      img.addEventListener('error', () => {
-        // keep steps/text visible; just hide the busted image
-        img.style.opacity = '0'
-      })
-    })
-  }
-
-  async function saveAllToArchive() {
-    if (!res?.html) return
     try {
-      const r = await fetch('/api/archive/save-all', {
+      setLoading(true);
+
+      // NOTE: this keeps your /api/generate contract: POST JSON { query }
+      // It accepts either a full HTML document string or a JSON with { html }.
+      const resp = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: res?.data?.query ?? query,
-          html: res.html,
-          recipes: res?.data?.recipes ?? [],
-        }),
-      })
-      if (!r.ok) throw new Error('bad status')
-      alert('Saved to Archive')
-    } catch {
-      // Fallback: download HTML so nothing is lost
-      const blob = new Blob([res!.html], { type: 'text/html;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `recipes-${Date.now()}.html`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
+        body: JSON.stringify({ query: q }),
+      });
+
+      // Try text first (for full HTML document responses):
+      const ct = resp.headers.get('content-type') || '';
+      if (!resp.ok) {
+        const fallback = await resp.text().catch(() => '');
+        throw new Error(fallback || `Request failed (${resp.status}).`);
+      }
+
+      if (ct.includes('text/html')) {
+        const html = await resp.text();
+        if (!/^<!doctype html>/i.test(html) && !/^<html[\s>]/i.test(html)) {
+          throw new Error('Model did not return a complete HTML document.');
+        }
+        setResultHTML(html);
+        return;
+      }
+
+      // Otherwise expect JSON with { html } (safe fallback)
+      const data = await resp.json().catch(() => null as any);
+      const html = data?.html ?? null;
+      if (typeof html !== 'string' || html.length < 40) {
+        throw new Error('Model did not return a complete HTML document.');
+      }
+      setResultHTML(html);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Request failed. Try again.');
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <div className="page">
-      {/* SINGLE header (no duplicate brand rows) */}
-      <header className="header">
-        <div className="brand">
-          <span className="logo" aria-hidden>✺</span>
-          <span className="name">FreshRecipes</span>
-        </div>
-        <a className="btn link" href="/archive" aria-label="Open archive">Archive</a>
-      </header>
+    <div className="space-y-6">
+      {/* Single, simple card — no in-page header row, no extra buttons */}
+      <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm sm:p-6">
+        <label
+          htmlFor="query"
+          className="mb-2 block text-sm font-medium text-neutral-700"
+        >
+          Describe what to fetch (e.g., ‘3 Michelin chef pasta recipes with step photos’)
+        </label>
 
-      {/* Input card */}
-      <section className="card">
+        {/* Bigger input box */}
         <textarea
-          className="input"
-          placeholder="Describe what to fetch (e.g., ‘3 Michelin chef pasta recipes with step photos’)"
+          id="query"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          rows={6}
+          placeholder="e.g., 3 Food52-style salad recipes with step photos"
+          className="w-full resize-y rounded-xl border border-neutral-300 bg-white p-4 text-base outline-none ring-0 placeholder:text-neutral-400 focus:border-neutral-400"
         />
-        <div className="row">
-          <button className="btn primary" onClick={generate} disabled={loading}>
+
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={loading}
+            className="inline-flex w-full items-center justify-center rounded-xl bg-indigo-600 px-4 py-3 text-base font-semibold text-white shadow-sm transition hover:bg-indigo-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          >
             {loading ? 'Generating…' : 'Generate'}
           </button>
         </div>
+
+        {/* Lightweight status */}
+        {errorMsg && (
+          <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <strong>Error:</strong> {errorMsg}
+          </p>
+        )}
       </section>
 
-      {/* Error box */}
-      {res?.error && (
-        <section className="card">
-          <div className="error"><strong>Error:</strong> {res.error}</div>
+      {/* Render full document in an iframe to preserve styles/scripts precisely */}
+      {resultHTML && (
+        <section className="rounded-2xl border border-neutral-200 bg-white p-3 shadow-sm">
+          <iframe
+            title="Recipe Result"
+            className="h-[70vh] w-full rounded-lg border border-neutral-200"
+            // Use srcDoc to display the returned full HTML safely
+            srcDoc={resultHTML}
+          />
         </section>
       )}
-
-      {/* Result card */}
-      {res?.html && (
-        <section className="card">
-          <div className="row end">
-            <button className="btn" onClick={saveAllToArchive}>Save</button>
-            <a className="btn" href="/archive">Archive</a>
-          </div>
-          <div ref={htmlRef} className="render" dangerouslySetInnerHTML={{ __html: res.html }} />
-        </section>
-      )}
-
-      {/* Footer — only copyright */}
-      <footer className="footer">© {new Date().getFullYear()} FreshRecipes</footer>
-
-      <style jsx>{`
-        .page { max-width: 860px; margin: 0 auto; padding: 16px; }
-
-        .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 0 12px; }
-        .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; }
-        .logo { width: 28px; height: 28px; display: grid; place-items: center; background: #6c5ce7; color: #fff; border-radius: 8px; font-size: 16px; }
-        .name { font-family: 'Playfair Display', ui-serif, Georgia, serif; font-size: 20px; }
-
-        .card { background: #fff; border: 1px solid #eef0f6; border-radius: 12px; padding: 16px; margin-top: 14px; box-shadow: 0 3px 12px rgba(0,0,0,0.03); }
-        .input { width: 100%; min-height: 160px; padding: 14px; border-radius: 10px; border: 1px solid #e5e7eb; outline: none; font-size: 16px; }
-        .row { display: flex; gap: 10px; margin-top: 12px; }
-        .row.end { justify-content: flex-end; }
-
-        .btn { height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; font-weight: 800; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
-        .btn:disabled { opacity: .5; cursor: not-allowed; }
-        .btn.link { background: #fff; }
-        .primary { background: #4f5cff; color: #fff; border-color: #4f5cff; }
-
-        .error { color: #b00020; }
-
-        .render { border: 1px solid #eef0f6; border-radius: 10px; padding: 10px; margin-top: 10px; }
-
-        .footer { color: #6b7280; font-size: 14px; padding: 24px 4px; }
-      `}</style>
     </div>
-  )
+  );
 }
