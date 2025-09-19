@@ -2,7 +2,7 @@
 
 import React from 'react'
 
-type ModelReturn = {
+type ResultShape = {
   html: string
   data: { query: string; recipes: any[] } | null
   error?: string
@@ -11,62 +11,62 @@ type ModelReturn = {
 export default function HomePage() {
   const [query, setQuery] = React.useState('')
   const [loading, setLoading] = React.useState(false)
-  const [result, setResult] = React.useState<ModelReturn | null>(null)
-  const renderedRef = React.useRef<HTMLDivElement>(null)
+  const [res, setRes] = React.useState<ResultShape | null>(null)
+  const htmlRef = React.useRef<HTMLDivElement>(null)
 
   async function generate() {
     if (!query.trim()) return
     setLoading(true)
-    setResult(null)
+    setRes(null)
     try {
-      const resp = await fetch('/api/generate', {
+      const r = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
       })
-      const json = await resp.json()
-      setResult(json)
-      requestAnimationFrame(() => ensureImages())
+      // We always get 200 with a shaped body
+      const json = (await r.json()) as ResultShape
+      setRes(json)
+      if (json?.html) requestAnimationFrame(enhanceImages)
     } catch {
-      setResult({ html: '', data: null, error: 'Request failed. Try again.' })
+      setRes({ html: '', data: null, error: 'Request failed at network layer.' })
     } finally {
       setLoading(false)
     }
   }
 
-  function ensureImages() {
-    const root = renderedRef.current
+  function enhanceImages() {
+    const root = htmlRef.current
     if (!root) return
-    const imgs = root.querySelectorAll('img')
-    imgs.forEach((img) => {
-      const el = img as HTMLImageElement
-      el.loading = 'lazy'
-      el.decoding = 'async'
-      el.referrerPolicy = 'no-referrer'
-      el.crossOrigin = 'anonymous'
-      el.addEventListener('error', () => {
-        el.style.opacity = '0.0' // don’t hide text/steps; only fade broken image
+    root.querySelectorAll<HTMLImageElement>('img').forEach((img) => {
+      img.loading = 'lazy'
+      img.decoding = 'async'
+      img.referrerPolicy = 'no-referrer'
+      img.crossOrigin = 'anonymous'
+      img.addEventListener('error', () => {
+        // fade broken image but KEEP the text/steps (never remove!)
+        img.style.opacity = '0.0'
       })
     })
   }
 
   async function saveAllToArchive() {
-    if (!result?.html) return
+    if (!res?.html) return
     try {
-      const resp = await fetch('/api/archive/save-all', {
+      const r = await fetch('/api/archive/save-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query: result?.data?.query ?? query,
-          html: result.html,
-          recipes: result?.data?.recipes ?? [],
+          query: res?.data?.query ?? query,
+          html: res.html,
+          recipes: res?.data?.recipes ?? [],
         }),
       })
-      if (!resp.ok) throw new Error('bad status')
+      if (!r.ok) throw new Error('bad status')
       toast('Saved to Archive')
     } catch {
-      // Fallback download to never lose work
-      const blob = new Blob([result!.html], { type: 'text/html;charset=utf-8' })
+      // Fallback: download HTML so the user never loses a render
+      const blob = new Blob([res!.html], { type: 'text/html;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -78,20 +78,26 @@ export default function HomePage() {
   }
 
   function toast(msg: string) {
-    const div = document.createElement('div')
-    div.textContent = msg
-    Object.assign(div.style, {
-      position:'fixed', bottom:'16px', left:'50%', transform:'translateX(-50%)',
-      padding:'10px 14px', background:'#121420', color:'#fff',
-      borderRadius:'12px', zIndex:'1000', fontWeight:'700'
+    const el = document.createElement('div')
+    el.textContent = msg
+    Object.assign(el.style, {
+      position: 'fixed',
+      bottom: '16px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      padding: '10px 14px',
+      background: '#121420',
+      color: '#fff',
+      borderRadius: '12px',
+      fontWeight: '700',
+      zIndex: '1000',
     } as CSSStyleDeclaration)
-    document.body.appendChild(div)
-    setTimeout(() => div.remove(), 1400)
+    document.body.appendChild(el)
+    setTimeout(() => el.remove(), 1400)
   }
 
   return (
     <div className="stack">
-      {/* Query */}
       <section className="card">
         <div className="query-grid">
           <textarea
@@ -99,13 +105,12 @@ export default function HomePage() {
             placeholder="Describe what to fetch (e.g., ‘3 Michelin chef pasta recipes with step photos’)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            aria-label="Recipe query"
           />
           <div className="controls">
             <button className="btn btn-primary" onClick={generate} disabled={loading}>
               {loading ? 'Generating…' : 'Generate'}
             </button>
-            <button className="btn btn-outline" onClick={saveAllToArchive} disabled={!result?.html}>
+            <button className="btn btn-outline" onClick={saveAllToArchive} disabled={!res?.html}>
               Save
             </button>
             <a className="btn btn-outline" href="/archive">Open Archive</a>
@@ -113,25 +118,19 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Error */}
-      {result?.error && (
+      {res?.error && (
         <section className="card rendered" role="status" aria-live="polite">
-          <div className="canvas"><strong>Error:</strong> {result.error}</div>
+          <div className="canvas"><strong>Error:</strong> {res.error}</div>
         </section>
       )}
 
-      {/* Results */}
-      {result?.html && (
+      {res?.html && (
         <section className="card rendered">
           <div className="toolbar">
             <button className="btn btn-outline" onClick={saveAllToArchive}>Save</button>
             <a className="btn btn-primary" href="/archive">Open Archive</a>
           </div>
-          <div
-            className="canvas"
-            ref={renderedRef}
-            dangerouslySetInnerHTML={{ __html: result.html }}
-          />
+          <div ref={htmlRef} className="canvas" dangerouslySetInnerHTML={{ __html: res.html }} />
         </section>
       )}
     </div>
