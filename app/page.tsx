@@ -1,389 +1,220 @@
+// app/page.tsx
 'use client';
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 
-/* =========================
-   Types (loose and forgiving)
-   ========================= */
+type RecipeSection = {
+  heading?: string;
+  html?: string; // server returns fully-formed HTML
+};
+
+type HeroImage = {
+  url?: string;
+  alt?: string;
+};
+
 type Recipe = {
-  id?: string;
-  title?: string;
+  id: string | number;
+  title: string;
   author?: string;
-  imageUrl?: string;
-
-  // possible body shapes the API might send
-  html?: string;
-  text?: string;
-  body?: string;
-  description?: string;
-  intro?: string;
-
-  ingredients?: string[] | string;
-  instructions?: string[] | string;
-  steps?: string[] | string;
-
-  sections?: Array<{ title?: string; content?: string }>;
-  [k: string]: unknown;
+  heroImage?: HeroImage;
+  sections?: RecipeSection[];
 };
 
-type GenerateResponse = {
-  recipes?: Recipe[];
-  [k: string]: unknown;
-};
+type ApiOk = { recipes?: Recipe[] };
 
-/* =========================
-   Small utilities
-   ========================= */
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+/** Light HTML gate: keep what we expect from our own API; reject obvious JS URLs. */
+function safeHtml(html?: string): string {
+  if (!html) return '';
+  // Very light link scrubbing; keep lists/paragraphs/etc. We are not stripping tags here,
+  // because the server already returns curated HTML. Only neuter javascript: links.
+  return html.replace(/href\s*=\s*["']\s*javascript:[^"']*["']/gi, 'href="#"');
 }
 
-function safeString(x: unknown): string {
-  if (Array.isArray(x)) return x.filter(Boolean).map((v) => String(v)).join('\n');
-  if (x && typeof x === 'object') return '';
-  return (x ?? '').toString();
-}
-
-/** Convert literal `\n` sequences to real line breaks, normalize CRLF. */
-function normalizeNewlines(s: string): string {
-  return s.replace(/\r\n?/g, '\n').replace(/\\n/g, '\n');
-}
-
-/** Very small markdown-ish to HTML. Keeps it simple and robust. */
-function toHtmlBlocks(input: string): string {
-  const s = normalizeNewlines(input).trim();
-  if (!s) return '';
-
-  // Turn markdown images into <img> that hide only themselves if broken.
-  const withImages = s.replace(
-    /!\[([^\]]*?)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_m, alt, url) =>
-      `<img src="${String(url)}" alt="${escapeHtml(String(alt))}" onerror="this.style.display='none'" />`
-  );
-
-  // Split into blocks by blank lines
-  const blocks = withImages.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
-
-  const htmlBlocks: string[] = [];
-
-  for (const block of blocks) {
-    // bullet list
-    if (/^(\* |- )/.test(block)) {
-      const items = block
-        .split(/\n/)
-        .map((ln) => ln.replace(/^(\* |- )/, '').trim())
-        .filter(Boolean)
-        .map((item) => `<li>${escapeHtml(item)}</li>`)
-        .join('');
-      htmlBlocks.push(`<ul>${items}</ul>`);
-      continue;
-    }
-
-    // numbered list
-    if (/^\d+[.)]\s+/.test(block)) {
-      const items = block
-        .split(/\n/)
-        .map((ln) => ln.replace(/^\d+[.)]\s+/, '').trim())
-        .filter(Boolean)
-        .map((item) => `<li>${escapeHtml(item)}</li>`)
-        .join('');
-      htmlBlocks.push(`<ol>${items}</ol>`);
-      continue;
-    }
-
-    // default paragraph (preserve single newlines as <br>)
-    htmlBlocks.push(`<p>${block.replace(/\n/g, '<br />')}</p>`);
-  }
-
-  return htmlBlocks.join('\n');
-}
-
-/** Gather *any* body content present on the recipe. */
-function buildBodyHtml(r: Recipe): string {
-  // 1) If server gives HTML, trust it (still show even if image fails)
-  if (r.html && String(r.html).trim()) return String(r.html);
-
-  // 2) Stitch from common fields
-  const parts: string[] = [];
-
-  const intro = safeString(r.intro) || safeString(r.description) || '';
-  if (intro.trim()) parts.push(intro.trim());
-
-  const textish =
-    safeString(r.body) ||
-    safeString(r.text) ||
-    ''; // generic raw text
-
-  if (textish.trim()) parts.push(textish.trim());
-
-  const ingText = safeString(r.ingredients);
-  if (ingText.trim()) parts.push(`**Ingredients**\n${ingText.trim()}`);
-
-  const stepsText =
-    safeString(r.instructions) ||
-    safeString(r.steps);
-  if (stepsText.trim()) parts.push(`**Instructions**\n${stepsText.trim()}`);
-
-  // 3) Sections fallback
-  if (Array.isArray(r.sections) && r.sections.length) {
-    for (const s of r.sections) {
-      const t = (s?.title ?? '').toString().trim();
-      const c = (s?.content ?? '').toString().trim();
-      if (t) parts.push(`**${t}**`);
-      if (c) parts.push(c);
-    }
-  }
-
-  const combined = parts.filter(Boolean).join('\n\n');
-  return toHtmlBlocks(combined);
-}
-
-/** Render one recipe into HTML (image is independent from the body). */
-function renderRecipeHtml(r: Recipe): string {
-  const out: string[] = [];
-
-  if (r.title) out.push(`<h2 class="recipe-title">${escapeHtml(r.title)}</h2>`);
-  if (r.author) out.push(`<div class="recipe-author">${escapeHtml(r.author)}</div>`);
-
-  // Image is optional and *never* controls body visibility.
-  if (r.imageUrl && /^https?:\/\//i.test(r.imageUrl)) {
-    out.push(
-      `<div class="recipe-hero"><img src="${r.imageUrl}" alt="${escapeHtml(
-        r.title || 'Recipe image'
-      )}" onerror="this.style.display='none'" /></div>`
-    );
-  }
-
-  const bodyHtml = buildBodyHtml(r);
-  if (bodyHtml) {
-    out.push(bodyHtml);
-  } else {
-    out.push(`<div class="recipe-empty">No recipe body returned from server.</div>`);
-  }
-
-  return out.join('\n');
-}
-
-/* =========================
-   Page
-   ========================= */
 export default function Page() {
-  const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [log, setLog] = useState<string>('');
-  const logRef = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
 
   const appendLog = useCallback((line: string) => {
-    setLog((prev) => (prev ? `${prev}\n${line}` : line));
+    setLog((prev) => [...prev, line]);
   }, []);
 
-  const handleGenerate = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setLog('');
+  const onGenerate = useCallback(async () => {
+    const query = (inputRef.current?.value || '').trim();
     setRecipes([]);
+    setLog([]);
+    if (!query) {
+      appendLog('✱ Error: Empty request');
+      return;
+    }
 
-    const url = `/api/generate?_=${Date.now()}`;
-    appendLog(`→ POST ${url}`);
-
+    setBusy(true);
     try {
-      const resp = await fetch(url, {
+      const url = `/api/generate?_=${Date.now()}`;
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({ query }),
+        // Send in a very tolerant envelope. Your route can pick whichever it expects.
+        body: JSON.stringify({ query, prompt: query, q: query }),
       });
 
-      const raw = await resp.text();
-      if (!resp.ok) {
-        appendLog(`✖ ${resp.status} ${resp.statusText}`);
-        if (raw) appendLog(raw.slice(0, 1200));
-        setError(`Request failed (${resp.status})`);
+      if (!res.ok) {
+        appendLog(`✱ Error: ${res.status} ${res.statusText}`);
         return;
       }
 
-      appendLog('— Raw payload (truncated) —');
-      appendLog(raw.slice(0, 2000));
+      const payload = (await res.json()) as ApiOk | unknown;
 
-      let data: GenerateResponse | null = null;
+      // Log a truncated view so we can see what shape came back.
       try {
-        data = JSON.parse(raw);
+        const preview = JSON.stringify(payload).slice(0, 800);
+        appendLog(`→ POST ${url}`);
+        appendLog(`– Raw payload (truncated) – ${preview}${preview.length === 800 ? '…' : ''}`);
       } catch {
-        setError('Server returned non-JSON');
-        appendLog('✖ JSON parse error');
+        /* ignore logging errors */
+      }
+
+      // Be defensive about shape:
+      let next: Recipe[] = [];
+      const p = payload as any;
+      if (Array.isArray(p)) next = p as Recipe[];
+      else if (p?.recipes && Array.isArray(p.recipes)) next = p.recipes as Recipe[];
+      else if (p?.data?.recipes && Array.isArray(p.data.recipes)) next = p.data.recipes as Recipe[];
+
+      if (!next.length) {
+        appendLog('✱ Error: No recipes array in response');
         return;
       }
 
-      const list = Array.isArray(data?.recipes) ? data!.recipes! : [];
-      const normalized = list.map((r, i) => ({
-        id: r.id ?? String(i),
-        title: safeString(r.title),
-        author: safeString(r.author),
-        imageUrl: safeString(r.imageUrl),
-        html: safeString(r.html),
-        text: safeString(r.text),
-        body: safeString(r.body),
-        description: safeString(r.description),
-        intro: safeString(r.intro),
-        ingredients: r.ingredients,
-        instructions: r.instructions,
-        steps: r.steps,
-        sections: r.sections,
-        ...r,
-      }));
-
-      setRecipes(normalized);
-      appendLog(`✓ Loaded ${normalized.length} recipe(s)`);
+      setRecipes(next);
     } catch (e: any) {
-      setError('Network error (fetch failed)');
-      appendLog(`✖ Load failed: ${e?.message || 'fetch failed'}`);
+      appendLog(`✱ Error: ${e?.message || 'Load failed'}`);
     } finally {
-      setLoading(false);
-      setTimeout(() => logRef.current?.scrollIntoView({ behavior: 'smooth' }), 0);
+      setBusy(false);
     }
-  }, [query, appendLog]);
+  }, [appendLog]);
 
-  const onSaveAll = useCallback(async () => {
-    try {
-      const resp = await fetch('/api/archive', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipes }),
-      });
-      if (!resp.ok) throw new Error(`Archive failed: ${resp.status}`);
-      appendLog('✓ Saved all to archive');
-    } catch (e: any) {
-      appendLog(`✖ Archive error: ${e?.message || 'failed'}`);
-    }
-  }, [recipes, appendLog]);
+  const hasAnyBody = useMemo(
+    () =>
+      recipes.some((r) =>
+        (r.sections || []).some((s) => {
+          const html = safeHtml(s?.html);
+          // consider non-empty if there is any non-tag text after trimming
+          const textish = html.replace(/<[^>]*>/g, '').trim();
+          return html.trim().length > 0 && textish.length > 0;
+        }),
+      ),
+    [recipes],
+  );
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
-      <h1 className="text-4xl font-extrabold tracking-tight">FreshRecipes</h1>
+      <h1 className="text-4xl font-black tracking-tight">FreshRecipes</h1>
       <p className="mt-2 text-neutral-600">Type a natural-language request. We’ll fetch and format it.</p>
 
-      <div className="mt-6 flex gap-3">
+      <div className="mt-6 flex gap-3 flex-wrap">
         <button
-          onClick={handleGenerate}
-          disabled={loading || !query.trim()}
-          className="rounded-lg px-5 py-3 font-semibold text-white disabled:opacity-50"
-          style={{ background: 'black' }}
+          onClick={onGenerate}
+          disabled={busy}
+          className="rounded-xl px-5 py-3 font-semibold text-white bg-black disabled:opacity-50"
         >
-          {loading ? 'Generating…' : 'Generate'}
+          {busy ? 'Generating…' : 'Generate'}
         </button>
-
         <button
-          onClick={onSaveAll}
-          disabled={!recipes.length || loading}
-          className="rounded-lg px-5 py-3 font-semibold bg-neutral-100 text-neutral-900 disabled:opacity-50"
+          disabled
+          className="rounded-xl px-5 py-3 font-semibold border border-neutral-300 text-neutral-500"
+        >
+          Copy all
+        </button>
+        <button
+          disabled
+          className="rounded-xl px-5 py-3 font-semibold border border-neutral-300 text-neutral-500"
         >
           Save all to archive
         </button>
       </div>
 
-      <textarea
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="e.g., Two chicken recipes with image + intro, ingredients, and clear step-by-step instructions"
-        className="mt-6 w-full rounded-xl border border-neutral-300 bg-white p-4 text-base leading-6 outline-none focus:ring-2 focus:ring-black"
-        rows={5}
-      />
+      <div className="mt-4">
+        <textarea
+          ref={inputRef}
+          rows={4}
+          placeholder="e.g., 3 easy chicken recipes with a cozy intro"
+          className="w-full rounded-2xl border border-neutral-300 p-4 outline-none focus:ring-2 focus:ring-black"
+        />
+      </div>
+
+      <h2 className="mt-10 text-2xl font-extrabold tracking-tight">Preview</h2>
+
+      {!recipes.length && (
+        <p className="mt-3 text-neutral-600">No recipes yet. Try typing a request above.</p>
+      )}
+
+      <div className="mt-4 space-y-6">
+        {recipes.map((r) => {
+          const key = String(r.id ?? r.title);
+          return (
+            <article key={key} className="rounded-3xl border border-neutral-200 p-6">
+              <header className="mb-3">
+                <h3 className="font-serif text-4xl font-black leading-tight tracking-tight">{r.title}</h3>
+                {r.author && <div className="mt-2 text-neutral-500">{r.author}</div>}
+              </header>
+
+              {/* Optional hero image */}
+              {r.heroImage?.url ? (
+                <figure className="mb-4 overflow-hidden rounded-2xl border border-neutral-200">
+                  {/* Hide the image if it errors; don't nuke the rest of the content */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    alt={r.heroImage.alt || r.title}
+                    src={r.heroImage.url}
+                    className="block w-full object-cover"
+                    onError={(el) => {
+                      (el.currentTarget as HTMLImageElement).style.display = 'none';
+                    }}
+                  />
+                </figure>
+              ) : null}
+
+              {/* Render sections from the API */}
+              {(r.sections && r.sections.length > 0) ? (
+                r.sections.map((s, i) => {
+                  const html = safeHtml(s?.html);
+                  const textish = html.replace(/<[^>]*>/g, '').trim();
+                  if (!html.trim() || !textish) return null;
+                  return (
+                    <section key={`${key}-sec-${i}`} className="mt-4">
+                      {s.heading ? (
+                        <h4 className="mb-2 text-xl font-extrabold">{s.heading}</h4>
+                      ) : null}
+                      <div
+                        className="prose prose-neutral max-w-none"
+                        dangerouslySetInnerHTML={{ __html: html }}
+                      />
+                    </section>
+                  );
+                })
+              ) : (
+                <p className="italic text-neutral-500">No recipe body returned from server.</p>
+              )}
+
+              <div className="mt-6 flex justify-end">
+                <button className="rounded-xl px-5 py-3 font-semibold border border-neutral-300">
+                  Save highlight
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
 
       <section className="mt-10">
-        <h2 className="text-3xl font-extrabold">Preview</h2>
-
-        {error && (
-          <div className="mt-4 rounded-lg border border-red-300 bg-red-50 p-3 text-red-800">
-            {error}
-          </div>
-        )}
-
-        {!recipes.length && !error && (
-          <p className="mt-4 text-neutral-500">No recipes yet. Try typing a request above.</p>
-        )}
-
-        <div className="mt-6 space-y-6">
-          {recipes.map((r) => {
-            const html = renderRecipeHtml(r);
-            return (
-              <article key={r.id} className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
-                <div
-                  className="prose max-w-none"
-                  // eslint-disable-next-line react/no-danger
-                  dangerouslySetInnerHTML={{ __html: html }}
-                />
-
-                {/* ONE Save button per recipe */}
-                <div className="mt-4 flex justify-end">
-                  <button
-                    className="rounded-xl border border-neutral-300 bg-neutral-50 px-4 py-2 font-semibold"
-                    onClick={async () => {
-                      try {
-                        const resp = await fetch('/api/archive', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ recipes: [r] }),
-                        });
-                        if (!resp.ok) throw new Error(`Save failed: ${resp.status}`);
-                        appendLog(`✓ Saved “${r.title || 'Untitled'}”`);
-                      } catch (e: any) {
-                        appendLog(`✖ Save error for “${r.title || 'Untitled'}”: ${e?.message || 'failed'}`);
-                      }
-                    }}
-                  >
-                    Save highlight
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      </section>
-
-      <section ref={logRef} className="mt-10">
         <h3 className="text-xl font-bold">Request log</h3>
-        <pre className="mt-2 whitespace-pre-wrap rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm">
-          {log || '—'}
+        <pre className="mt-2 whitespace-pre-wrap rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-[13px] leading-5">
+          {log.join('\n')}
         </pre>
       </section>
-
-      <style>{`
-        .recipe-title {
-          font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-          font-size: 2rem;
-          line-height: 2.4rem;
-          font-weight: 800;
-          letter-spacing: -0.01em;
-          margin: 0 0 .25rem 0;
-        }
-        .recipe-author {
-          color: #6b7280;
-          margin-bottom: 1rem;
-        }
-        .recipe-hero img {
-          width: 100%;
-          height: auto;
-          border-radius: 0.75rem;
-          display: block;
-          margin: 0.5rem 0 1rem 0;
-        }
-        .recipe-empty {
-          color: #6b7280;
-          font-style: italic;
-          padding: .5rem 0;
-        }
-        .prose p { margin: 0 0 0.75rem 0; }
-        .prose ul, .prose ol { margin: .5rem 0 .75rem 1.25rem; }
-        .prose li { margin: .2rem 0; }
-        .prose img { max-width: 100%; height: auto; border-radius: 0.5rem; }
-        .prose h2, .prose h3 { margin-top: 1.25rem; margin-bottom: 0.5rem; }
-      `}</style>
     </main>
   );
 }
