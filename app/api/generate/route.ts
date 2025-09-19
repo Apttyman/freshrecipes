@@ -50,7 +50,7 @@ function bad(message: string, status = 400) {
   )
 }
 
-// Try to load your authored system prompt so we don't regress style/content.
+// Load the authored system prompt from disk (your original spec)
 async function loadSystemPrompt(): Promise<string> {
   const candidates = [
     join(process.cwd(), 'system-prompt.txt'),
@@ -63,11 +63,10 @@ async function loadSystemPrompt(): Promise<string> {
       if (s?.trim()) return s
     } catch {}
   }
-  // Fallback prompt (kept short, we’ll augment with the JSON+HTML contract below)
   return `Fetch {input directives}. Output complete Food52-style HTML (chef bio, multi-paragraph intro, exact step counts, real images) — no placeholders.`
 }
 
-// Tight, explicit contract for the hybrid return.
+// Hybrid contract: JSON + full HTML, with explicit 1:1 step→photo rule when the source provides photos
 function buildHybridContractPrompt(authoredSystem: string) {
   return `
 ${authoredSystem.trim()}
@@ -97,6 +96,8 @@ CRITICAL OUTPUT CONTRACT — RETURN ONE JSON OBJECT WITH:
           "steps": [
             { "num": 1, "text": "Full step text...", "images": [{"url":"https://...","alt":"...","role":"step"}] }
             // EXACT 1:1 with the original step count. NEVER merge or drop steps.
+            // IF THE SOURCE DISPLAYS A PHOTO FOR THIS SPECIFIC STEP, INCLUDE THAT PHOTO'S REAL URL IN images[] FOR THIS STEP (1:1).
+            // NEVER FABRICATE OR SUBSTITUTE STOCK/PLACEHOLDER IMAGES.
           ]
         },
         "media": { "gallery": [{"url":"https://...","alt":"..."}] },
@@ -113,8 +114,8 @@ CRITICAL OUTPUT CONTRACT — RETURN ONE JSON OBJECT WITH:
 
 STRICT RULES:
 - "html" must be a COMPLETE, valid HTML document with inline <style>, no external CSS/JS.
-- "data" must describe EXACTLY the same recipes as "html" (same titles, step count, etc.).
-- Use only real image URLs from the source; if an image is unavailable, omit it silently BUT KEEP THE STEP TEXT.
+- "data" must describe EXACTLY the same recipes as "html" (same titles, chef info, paragraphs, ingredient items, and per-step text).
+- Use ONLY real image URLs from the original sources. If a specific step has no real photo in the source, omit images for that step BUT KEEP THE STEP TEXT INTACT (do not drop or shorten).
 - Return ONLY JSON (no markdown fences, no commentary).`
     .replace(/\r/g, '')
     .trim()
@@ -202,6 +203,8 @@ export async function POST(req: Request) {
       if (!Array.isArray(steps) || typeof stepCount !== 'number' || steps.length !== stepCount) {
         return bad('Validation failed: instructions.stepCount must equal steps.length.', 502)
       }
+      // NOTE: we cannot verify source photos exist at runtime;
+      // the contract above instructs the model to include a per-step photo only when the source truly has one.
     }
 
     return ok(parsed)
