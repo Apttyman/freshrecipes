@@ -2,9 +2,8 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import clsx from "clsx";
 
-/** Types that match what the server returns */
+/** Data types expected from /api/generate */
 type Section = { heading?: string | null; html?: string | null };
 type Recipe = {
   id: number | string;
@@ -12,7 +11,7 @@ type Recipe = {
   author?: string | null;
   sections?: Section[];
   html?: string | null;       // optional single-body html
-  imageUrl?: string | null;
+  imageUrl?: string | null;   // optional hero image
 };
 
 export default function Page() {
@@ -39,7 +38,7 @@ export default function Page() {
         for (const s of r.sections) {
           if (s.heading) parts.push(`\n## ${s.heading}`);
           if (s.html) {
-            // strip tags for the copy-all text so it's clean plaintext
+            // strip tags for copy so it’s clean plaintext
             const text = s.html.replace(/<[^>]+>/g, "");
             parts.push(text.trim());
           }
@@ -61,8 +60,8 @@ export default function Page() {
     log(`→ POST /api/generate`);
 
     try {
-      // IMPORTANT: send JSON with Content-Type header
-      const res = await fetch(`/api/generate?_=` + Date.now(), {
+      // IMPORTANT: send JSON with proper header
+      const res = await fetch(`/api/generate?_=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: q }),
@@ -87,7 +86,7 @@ export default function Page() {
       }
       setRecipes(list);
 
-      // scroll preview into view a little
+      // scroll preview into view a bit
       setTimeout(() => listTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } catch (e: any) {
       log(`✖ Error: ${e?.message ?? "Load failed"}`);
@@ -107,35 +106,51 @@ export default function Page() {
     }
   }, [canCopyAll, copyAllText, log]);
 
-  // “Save highlight” — one button per recipe card
-  const onSaveRecipe = useCallback((r: Recipe) => {
+  // Archive = save full results list
+  const onSaveAll = useCallback(() => {
+    if (!canSaveAll) return;
     try {
       const key = "freshrecipes.archive";
       const prev: Recipe[] = JSON.parse(localStorage.getItem(key) || "[]");
-      const next = [...prev, r];
+      const next = [...prev, ...recipes];
       localStorage.setItem(key, JSON.stringify(next));
-      log(`✓ Saved “${r.title}” to archive`);
+      log(`✓ Saved ${recipes.length} recipe(s) to archive`);
     } catch {
       log("✖ Save failed");
+    }
+  }, [canSaveAll, recipes, log]);
+
+  // Highlight = save exactly one per recipe card (dedup by id)
+  const onSaveHighlight = useCallback((r: Recipe) => {
+    try {
+      const key = "freshrecipes.highlights";
+      const prev: Recipe[] = JSON.parse(localStorage.getItem(key) || "[]");
+      const exists = prev.some((p) => String(p.id) === String(r.id));
+      const next = exists ? prev : [...prev, r];
+      localStorage.setItem(key, JSON.stringify(next));
+      log(`✓ Saved highlight for “${r.title}”`);
+    } catch {
+      log("✖ Save highlight failed");
     }
   }, [log]);
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-8">
+      {/* Title */}
       <h1 className="text-4xl font-black tracking-tight">FreshRecipes</h1>
       <p className="mt-3 text-neutral-600">
-        Type a natural-language request. We’ll fetch and format it.
+        Ask for what you want (e.g., &ldquo;3 top chef pasta recipes&rdquo;). We’ll format the result beautifully.
       </p>
 
-      <div className="mt-6 flex gap-3">
+      {/* Actions */}
+      <div className="mt-6 flex flex-wrap gap-3">
         <button
           onClick={onGenerate}
           disabled={busy}
-          className={clsx(
-            "rounded-xl px-5 py-3 text-base font-semibold text-white",
-            busy ? "bg-neutral-500" : "bg-black hover:bg-neutral-800",
-            "focus:outline-none focus-visible:ring-2 focus-visible:ring-black"
-          )}
+          className={
+            "rounded-xl px-5 py-3 text-base font-semibold text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-black " +
+            (busy ? "bg-neutral-500" : "bg-black hover:bg-neutral-800")
+          }
         >
           {busy ? "Generating…" : "Generate"}
         </button>
@@ -143,48 +158,40 @@ export default function Page() {
         <button
           onClick={onCopyAll}
           disabled={!canCopyAll}
-          className={clsx(
-            "rounded-xl px-5 py-3 text-base font-semibold",
-            canCopyAll
+          className={
+            "rounded-xl px-5 py-3 text-base font-semibold " +
+            (canCopyAll
               ? "bg-white text-black ring-1 ring-neutral-300 hover:bg-neutral-50"
-              : "bg-neutral-200 text-neutral-500"
-          )}
+              : "bg-neutral-200 text-neutral-500")
+          }
         >
           Copy all
         </button>
 
         <button
+          onClick={onSaveAll}
           disabled={!canSaveAll}
-          onClick={() => {
-            try {
-              const key = "freshrecipes.archive";
-              const prev: Recipe[] = JSON.parse(localStorage.getItem(key) || "[]");
-              const next = [...prev, ...recipes];
-              localStorage.setItem(key, JSON.stringify(next));
-              log(`✓ Saved ${recipes.length} recipe(s) to archive`);
-            } catch {
-              log("✖ Save failed");
-            }
-          }}
-          className={clsx(
-            "rounded-xl px-5 py-3 text-base font-semibold",
-            canSaveAll
+          className={
+            "rounded-xl px-5 py-3 text-base font-semibold " +
+            (canSaveAll
               ? "bg-white text-black ring-1 ring-neutral-300 hover:bg-neutral-50"
-              : "bg-neutral-200 text-neutral-500"
-          )}
+              : "bg-neutral-200 text-neutral-500")
+          }
         >
           Save all to archive
         </button>
       </div>
 
+      {/* Prompt box */}
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
-        placeholder="e.g., Empanada recipe"
+        placeholder="e.g., 3 top chef pasta recipes using seasonal ingredients"
         className="mt-5 w-full rounded-2xl border border-neutral-300 p-4 text-lg outline-none focus:ring-2 focus:ring-black"
         rows={5}
       />
 
+      {/* Preview */}
       <h2 className="mt-10 mb-4 text-3xl font-extrabold tracking-tight">Preview</h2>
 
       <div ref={listTopRef} />
@@ -199,14 +206,16 @@ export default function Page() {
             key={r.id}
             className="rounded-3xl border border-neutral-200 bg-white p-6 shadow-sm"
           >
-            <h3 className="font-black tracking-tight text-4xl md:text-5xl leading-tight">
-              {r.title}
-            </h3>
-            {r.author && (
-              <p className="mt-2 text-lg text-neutral-600">{r.author}</p>
-            )}
+            <header>
+              <h3 className="font-black tracking-tight text-4xl md:text-5xl leading-tight">
+                {r.title}
+              </h3>
+              {r.author && (
+                <p className="mt-2 text-lg text-neutral-600">{r.author}</p>
+              )}
+            </header>
 
-            {/* Optional top image */}
+            {/* Optional image */}
             {r.imageUrl && (
               <div className="mt-4 overflow-hidden rounded-2xl border border-neutral-200">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -219,7 +228,7 @@ export default function Page() {
               </div>
             )}
 
-            {/* Body (either single html or sections) */}
+            {/* Body */}
             <div className="mt-5 space-y-6">
               {r.sections && r.sections.length > 0 ? (
                 r.sections.map((s, i) => (
@@ -230,6 +239,7 @@ export default function Page() {
                     {s.html && (
                       <div
                         className="prose prose-neutral max-w-none"
+                        // Intentionally allow HTML returned by your generator
                         dangerouslySetInnerHTML={{ __html: s.html }}
                       />
                     )}
@@ -247,9 +257,10 @@ export default function Page() {
               )}
             </div>
 
+            {/* Per-recipe toolbar (ONE highlight button per recipe) */}
             <div className="mt-6 flex justify-end">
               <button
-                onClick={() => onSaveRecipe(r)}
+                onClick={() => onSaveHighlight(r)}
                 className="rounded-2xl bg-white px-5 py-3 text-base font-semibold ring-1 ring-neutral-300 hover:bg-neutral-50"
               >
                 Save highlight
