@@ -2,7 +2,8 @@
 "use client";
 
 import { useState } from "react";
-import { buttonClass } from "./layout";
+import Link from "next/link";
+import { buttonClass, disabledButtonClass, secondaryButtonClass } from "./layout";
 
 export default function HomePage() {
   const [query, setQuery] = useState("");
@@ -24,63 +25,64 @@ export default function HomePage() {
 
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        throw new Error(`Request failed (${res.status}). ${txt.slice(0, 180)}`);
+        throw new Error(
+          txt || `Model did not return a complete HTML document. Check your model/keys.`
+        );
       }
 
-      // NOTE: your route may return JSON or HTML. We don’t render here;
-      // keep this simple UI focused. If you want to show the result inline,
-      // add your own rendering below.
-      // const data = await res.json();
-      // ...
+      // If your API returns something to show, handle it here
+      // (this file is just restoring the UI state you asked for).
     } catch (err: any) {
-      setError(err?.message ?? "Request failed. Try again.");
+      const msg =
+        typeof err?.message === "string" && err.message.trim()
+          ? err.message.trim()
+          : "Model did not return a complete HTML document. Check your model/keys.";
+      setError(msg);
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="relative">
-      {/* One clean card – NO header/footer here */}
-      <section className="mx-auto max-w-3xl">
-        <form
-          onSubmit={onSubmit}
-          className="rounded-2xl border border-neutral-200 bg-white shadow-sm p-5 sm:p-6"
-        >
-          <label
-            htmlFor="recipe-query"
-            className="block text-[17px] font-semibold text-neutral-800 mb-3"
-          >
-            Describe what to fetch (e.g., ‘3 Michelin chef pasta recipes with step photos’)
-          </label>
-
+    <section className="mx-auto max-w-3xl">
+      <form
+        onSubmit={onSubmit}
+        className="rounded-2xl border border-neutral-200 bg-white shadow-sm p-5 sm:p-6"
+      >
+        <div className="mb-4">
           <textarea
-            id="recipe-query"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="e.g., 3 Food52-style salad recipes with step photos"
-            className="w-full min-h-[160px] rounded-xl border border-neutral-300 bg-white px-4 py-3
-                       text-[16px] leading-6 outline-none focus:border-indigo-400
+            placeholder="2 Michelin star pasta recipes"
+            className="w-full min-h-[180px] rounded-xl border border-neutral-300 bg-white px-4 py-3
+                       text-[18px] leading-7 outline-none focus:border-indigo-400
                        focus:ring-2 focus:ring-indigo-200 placeholder:text-neutral-400"
           />
+        </div>
 
-          <div className="mt-4">
-            <button
-              type="submit"
-              disabled={loading}
-              className={`${buttonClass} w-full sm:w-auto`}
-            >
-              {loading ? "Generating…" : "Generate"}
-            </button>
-          </div>
+        <div className="flex flex-col gap-3">
+          <button type="submit" disabled={loading} className={`${buttonClass} w-full`}>
+            {loading ? "Generating…" : "Generate"}
+          </button>
 
-          {error && (
-            <div className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-rose-700">
-              <strong className="font-semibold">Error:</strong> {error}
-            </div>
-          )}
-        </form>
-      </section>
-    </div>
+          {/* Disabled Save button (as in your screenshot) */}
+          <button type="button" disabled className={`${disabledButtonClass} w-full`}>
+            Save
+          </button>
+
+          {/* “Open Archive” button (present in the screenshot) */}
+          <Link href="/archive" className={`${secondaryButtonClass} w-full`}>
+            Open Archive
+          </Link>
+        </div>
+      </form>
+
+      {error && (
+        <div className="mt-6 rounded-2xl border border-rose-300 bg-rose-50 px-4 py-4 text-rose-700">
+          <strong className="font-semibold">Error:</strong>{" "}
+          {error || "Model did not return a complete HTML document. Check your model/keys."}
+        </div>
+      )}
+    </section>
   );
 }
