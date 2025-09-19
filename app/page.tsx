@@ -1,288 +1,251 @@
-// app/page.tsx
-"use client";
+'use client';
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import React from 'react';
 
-/** Data types expected from /api/generate */
-type Section = { heading?: string | null; html?: string | null };
+type RecipeSection = {
+  heading: string;
+  html: string;
+};
+
 type Recipe = {
-  id: number | string;
+  id: string | number;
   title: string;
-  author?: string | null;
-  sections?: Section[];
-  html?: string | null;       // optional single-body html
-  imageUrl?: string | null;   // optional hero image
+  author?: string;
+  sections: RecipeSection[];
+  imageUrl?: string | null;
+};
+
+type GenerateResponse = {
+  recipes: Recipe[];
+  error?: string;
 };
 
 export default function Page() {
-  const [prompt, setPrompt] = useState("");
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const listTopRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = React.useState('');
+  const [recipes, setRecipes] = React.useState<Recipe[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [log, setLog] = React.useState<string[]>([]);
 
-  const log = useCallback((line: string) => {
-    setLogLines((prev) => [...prev, line]);
-  }, []);
+  // Keep a simple set of saved recipe IDs for disabling the button (one per recipe)
+  const [saved, setSaved] = React.useState<Set<string | number>>(new Set());
 
-  const canCopyAll = recipes.length > 0;
-  const canSaveAll = recipes.length > 0;
+  function pushLog(line: string) {
+    setLog(l => [`• ${line}`, ...l].slice(0, 25));
+  }
 
-  const copyAllText = useMemo(() => {
-    if (recipes.length === 0) return "";
-    const blocks = recipes.map((r) => {
-      const parts: string[] = [];
-      parts.push(`# ${r.title}`);
-      if (r.author) parts.push(`by ${r.author}`);
-      if (r.sections?.length) {
-        for (const s of r.sections) {
-          if (s.heading) parts.push(`\n## ${s.heading}`);
-          if (s.html) {
-            // strip tags for copy so it’s clean plaintext
-            const text = s.html.replace(/<[^>]+>/g, "");
-            parts.push(text.trim());
-          }
-        }
-      } else if (r.html) {
-        parts.push(r.html.replace(/<[^>]+>/g, "").trim());
-      }
-      return parts.join("\n");
-    });
-    return blocks.join("\n\n---\n\n");
-  }, [recipes]);
-
-  const onGenerate = useCallback(async () => {
-    const q = prompt.trim();
-    if (!q) return;
-    setBusy(true);
+  async function handleGenerate() {
+    setLoading(true);
+    setError(null);
     setRecipes([]);
-    setLogLines([]);
-    log(`→ POST /api/generate`);
+    setSaved(new Set());
 
+    const trimmed = query.trim();
+    pushLog(`POST /api/generate`);
     try {
-      // IMPORTANT: send JSON with proper header
-      const res = await fetch(`/api/generate?_=${Date.now()}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: q }),
+      const resp = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: trimmed }),
       });
 
-      let data: any = null;
-      try {
-        data = await res.json();
-      } catch {
-        data = null;
-      }
+      // Read raw text so we can surface non-JSON errors too
+      const raw = await resp.text();
 
-      if (!res.ok) {
-        log(`✖ Error: HTTP ${res.status}`);
-        setRecipes([]);
+      if (!resp.ok) {
+        pushLog(`Error: HTTP ${resp.status}`);
+        // The route returns a shaped JSON error, but if something else happens, raw may not be JSON.
+        try {
+          const j = JSON.parse(raw) as GenerateResponse;
+          setError(j.error || `Request failed (${resp.status})`);
+        } catch {
+          setError(raw || `Request failed (${resp.status})`);
+        }
         return;
       }
 
-      const list = Array.isArray(data?.recipes) ? (data.recipes as Recipe[]) : [];
-      if (list.length === 0) {
-        log(`ℹ No recipes returned.`);
+      let data: GenerateResponse | null = null;
+      try {
+        data = JSON.parse(raw) as GenerateResponse;
+      } catch {
+        setError('Server returned invalid JSON.');
+        pushLog('Error: invalid JSON from server');
+        return;
       }
+
+      const list = Array.isArray(data.recipes) ? data.recipes : [];
       setRecipes(list);
-
-      // scroll preview into view a bit
-      setTimeout(() => listTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+      if (data.error) setError(data.error);
     } catch (e: any) {
-      log(`✖ Error: ${e?.message ?? "Load failed"}`);
-      setRecipes([]);
+      const msg = e?.message || 'Network error';
+      setError(msg);
+      pushLog(`Error: ${msg}`);
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
-  }, [prompt, log]);
+  }
 
-  const onCopyAll = useCallback(async () => {
-    if (!canCopyAll) return;
-    try {
-      await navigator.clipboard.writeText(copyAllText);
-      log("✓ Copied all to clipboard");
-    } catch {
-      log("✖ Copy failed");
-    }
-  }, [canCopyAll, copyAllText, log]);
+  function stripHtml(html: string) {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<\/li>/gi, '\n')
+      .replace(/<\/h\d>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
 
-  // Archive = save full results list
-  const onSaveAll = useCallback(() => {
-    if (!canSaveAll) return;
+  async function handleCopyAll() {
+    const parts: string[] = [];
+    recipes.forEach(r => {
+      parts.push(`# ${r.title}`);
+      if (r.author) parts.push(`by ${r.author}`);
+      r.sections.forEach(s => {
+        parts.push(`\n## ${s.heading}`);
+        parts.push(stripHtml(s.html));
+      });
+      parts.push('\n');
+    });
+    const text = parts.join('\n').trim();
     try {
-      const key = "freshrecipes.archive";
-      const prev: Recipe[] = JSON.parse(localStorage.getItem(key) || "[]");
-      const next = [...prev, ...recipes];
-      localStorage.setItem(key, JSON.stringify(next));
-      log(`✓ Saved ${recipes.length} recipe(s) to archive`);
+      await navigator.clipboard.writeText(text);
+      pushLog('Copied all recipes to clipboard');
     } catch {
-      log("✖ Save failed");
+      pushLog('Copy failed (clipboard permission?)');
     }
-  }, [canSaveAll, recipes, log]);
+  }
 
-  // Highlight = save exactly one per recipe card (dedup by id)
-  const onSaveHighlight = useCallback((r: Recipe) => {
+  function saveToArchive(items: Recipe[]) {
     try {
-      const key = "freshrecipes.highlights";
-      const prev: Recipe[] = JSON.parse(localStorage.getItem(key) || "[]");
-      const exists = prev.some((p) => String(p.id) === String(r.id));
-      const next = exists ? prev : [...prev, r];
-      localStorage.setItem(key, JSON.stringify(next));
-      log(`✓ Saved highlight for “${r.title}”`);
+      const key = 'fr-archive';
+      const prev: Recipe[] = JSON.parse(localStorage.getItem(key) || '[]');
+      const merged = [...prev, ...items];
+      localStorage.setItem(key, JSON.stringify(merged));
+      pushLog(`Saved ${items.length} to archive`);
     } catch {
-      log("✖ Save highlight failed");
+      pushLog('Saving to archive failed (localStorage?)');
     }
-  }, [log]);
+  }
+
+  function handleSaveRecipe(r: Recipe) {
+    if (saved.has(r.id)) return;
+    saveToArchive([r]);
+    setSaved(s => new Set([...s, r.id]));
+  }
+
+  function handleSaveAll() {
+    if (!recipes.length) return;
+    saveToArchive(recipes);
+    setSaved(new Set(recipes.map(r => r.id)));
+  }
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-8">
-      {/* Title */}
-      <h1 className="text-4xl font-black tracking-tight">FreshRecipes</h1>
-      <p className="mt-3 text-neutral-600">
-        Ask for what you want (e.g., &ldquo;3 top chef pasta recipes&rdquo;). We’ll format the result beautifully.
+    <main className="mx-auto max-w-3xl px-4 py-8">
+      <h1 className="text-4xl font-extrabold tracking-tight">FreshRecipes</h1>
+      <p className="mt-2 text-gray-600">
+        Type a natural-language request. We’ll fetch and format it.
       </p>
 
-      {/* Actions */}
       <div className="mt-6 flex flex-wrap gap-3">
         <button
-          onClick={onGenerate}
-          disabled={busy}
-          className={
-            "rounded-xl px-5 py-3 text-base font-semibold text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-black " +
-            (busy ? "bg-neutral-500" : "bg-black hover:bg-neutral-800")
-          }
+          onClick={handleGenerate}
+          disabled={loading}
+          className={`rounded-xl px-5 py-3 font-semibold text-white ${loading ? 'bg-gray-400' : 'bg-black hover:opacity-90'}`}
         >
-          {busy ? "Generating…" : "Generate"}
+          {loading ? 'Generating…' : 'Generate'}
         </button>
 
         <button
-          onClick={onCopyAll}
-          disabled={!canCopyAll}
-          className={
-            "rounded-xl px-5 py-3 text-base font-semibold " +
-            (canCopyAll
-              ? "bg-white text-black ring-1 ring-neutral-300 hover:bg-neutral-50"
-              : "bg-neutral-200 text-neutral-500")
-          }
+          onClick={handleCopyAll}
+          disabled={!recipes.length}
+          className={`rounded-xl px-5 py-3 font-semibold border ${recipes.length ? 'bg-white' : 'bg-gray-100 text-gray-400'}`}
+          title={recipes.length ? 'Copy all to clipboard' : 'Nothing to copy yet'}
         >
           Copy all
         </button>
 
         <button
-          onClick={onSaveAll}
-          disabled={!canSaveAll}
-          className={
-            "rounded-xl px-5 py-3 text-base font-semibold " +
-            (canSaveAll
-              ? "bg-white text-black ring-1 ring-neutral-300 hover:bg-neutral-50"
-              : "bg-neutral-200 text-neutral-500")
-          }
+          onClick={handleSaveAll}
+          disabled={!recipes.length}
+          className={`rounded-xl px-5 py-3 font-semibold border ${recipes.length ? 'bg-white' : 'bg-gray-100 text-gray-400'}`}
+          title={recipes.length ? 'Save all to archive' : 'Nothing to save yet'}
         >
           Save all to archive
         </button>
       </div>
 
-      {/* Prompt box */}
       <textarea
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        placeholder="e.g., 3 top chef pasta recipes using seasonal ingredients"
-        className="mt-5 w-full rounded-2xl border border-neutral-300 p-4 text-lg outline-none focus:ring-2 focus:ring-black"
-        rows={5}
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        placeholder="e.g., Smoked salmon tacos with lime crema"
+        className="mt-4 w-full min-h-[140px] rounded-2xl border p-4 text-lg"
       />
 
-      {/* Preview */}
-      <h2 className="mt-10 mb-4 text-3xl font-extrabold tracking-tight">Preview</h2>
+      <h2 className="mt-10 text-3xl font-extrabold tracking-tight">Preview</h2>
 
-      <div ref={listTopRef} />
-
-      {recipes.length === 0 && (
-        <p className="text-neutral-500">No recipes yet. Try typing a request above.</p>
+      {!recipes.length && !loading && (
+        <p className="mt-3 text-gray-500">No recipes yet. Try typing a request above.</p>
       )}
 
-      <div className="space-y-6">
-        {recipes.map((r) => (
-          <article
-            key={r.id}
-            className="rounded-3xl border border-neutral-200 bg-white p-6 shadow-sm"
-          >
-            <header>
-              <h3 className="font-black tracking-tight text-4xl md:text-5xl leading-tight">
+      <div className="mt-6 space-y-6">
+        {recipes.map(r => (
+          <article key={r.id} className="rounded-3xl border p-6">
+            <header className="mb-4">
+              <h3 className="text-4xl font-extrabold leading-tight" style={{ fontFamily: 'Playfair Display, ui-serif' }}>
                 {r.title}
               </h3>
-              {r.author && (
-                <p className="mt-2 text-lg text-neutral-600">{r.author}</p>
-              )}
+              {r.author && <p className="mt-1 text-lg text-gray-500">Chef {r.author}</p>}
             </header>
 
-            {/* Optional image */}
-            {r.imageUrl && (
-              <div className="mt-4 overflow-hidden rounded-2xl border border-neutral-200">
+            {/* Optional image — hide if it fails */}
+            {r.imageUrl ? (
+              <div className="mb-6">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={r.imageUrl}
                   alt={r.title}
-                  className="block h-auto w-full object-cover"
-                  loading="lazy"
+                  className="w-full rounded-xl border"
+                  onError={(el) => {
+                    const t = el.currentTarget;
+                    t.style.display = 'none';
+                  }}
                 />
               </div>
-            )}
+            ) : null}
 
-            {/* Body */}
-            <div className="mt-5 space-y-6">
-              {r.sections && r.sections.length > 0 ? (
-                r.sections.map((s, i) => (
-                  <section key={i}>
-                    {s.heading && (
-                      <h4 className="text-2xl font-extrabold mt-2 mb-3">{s.heading}</h4>
-                    )}
-                    {s.html && (
-                      <div
-                        className="prose prose-neutral max-w-none"
-                        // Intentionally allow HTML returned by your generator
-                        dangerouslySetInnerHTML={{ __html: s.html }}
-                      />
-                    )}
-                  </section>
-                ))
-              ) : r.html ? (
-                <div
-                  className="prose prose-neutral max-w-none"
-                  dangerouslySetInnerHTML={{ __html: r.html }}
-                />
-              ) : (
-                <p className="text-neutral-500 italic">
-                  No recipe body returned from server.
-                </p>
-              )}
+            <div className="space-y-6">
+              {r.sections.map((s, idx) => (
+                <section key={idx}>
+                  <h4 className="text-2xl font-bold mb-2">{s.heading}</h4>
+                  {/* server provides HTML for each section */}
+                  <div
+                    className="prose prose-lg max-w-none"
+                    dangerouslySetInnerHTML={{ __html: s.html }}
+                  />
+                </section>
+              ))}
             </div>
 
-            {/* Per-recipe toolbar (ONE highlight button per recipe) */}
             <div className="mt-6 flex justify-end">
               <button
-                onClick={() => onSaveHighlight(r)}
-                className="rounded-2xl bg-white px-5 py-3 text-base font-semibold ring-1 ring-neutral-300 hover:bg-neutral-50"
+                onClick={() => handleSaveRecipe(r)}
+                disabled={saved.has(r.id)}
+                className={`rounded-xl px-5 py-3 font-semibold border ${saved.has(r.id) ? 'bg-gray-100 text-gray-400' : 'bg-white hover:bg-gray-50'}`}
+                title={saved.has(r.id) ? 'Already saved' : 'Save to archive'}
               >
-                Save highlight
+                {saved.has(r.id) ? 'Saved' : 'Save highlight'}
               </button>
             </div>
           </article>
         ))}
       </div>
 
-      {/* Request log */}
-      <h3 className="mt-10 mb-2 text-2xl font-bold">Request log</h3>
-      <div className="rounded-2xl border border-neutral-200 bg-white p-4 font-mono text-sm">
-        {logLines.length === 0 ? (
-          <p className="text-neutral-500">—</p>
-        ) : (
-          <ul className="space-y-1">
-            {logLines.map((l, i) => (
-              <li key={i}>• {l}</li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <h2 className="mt-10 text-2xl font-bold">Request log</h2>
+      {error && <p className="mt-2 text-red-600">✖ {error}</p>}
+      <pre className="mt-2 whitespace-pre-wrap rounded-2xl border p-4 text-sm text-gray-800 bg-gray-50">
+        {log.join('\n') || '—'}
+      </pre>
     </main>
   );
 }
