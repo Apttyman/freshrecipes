@@ -1,53 +1,48 @@
 // app/layout.tsx
-import type { Metadata } from 'next'
-import './globals.css'
-import { Playfair_Display } from 'next/font/google'
+import './globals.css';
+import Link from 'next/link';
+import { ReactNode } from 'react';
 
-const playfair = Playfair_Display({
-  subsets: ['latin'],
-  display: 'swap',
-  weight: ['400', '700', '800', '900'],
-  variable: '--font-playfair',
-})
-
-export const metadata: Metadata = {
+export const metadata = {
   title: 'FreshRecipes',
-  description: 'Chef-grade recipes with elegant presentation',
-}
+  description: 'Fetch and render chef-quality recipes.',
+};
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={playfair.variable}>
-      <body>
-        <header className="site-header">
-          <div className="container header-inner">
-            <a className="brand" href="/" aria-label="FreshRecipes home">
-              <span className="brand-mark" aria-hidden>✷</span>
-              <span className="brand-text">FreshRecipes</span>
-            </a>
-            <nav className="header-actions">
-              <a className="btn btn-outline" href="/archive">
-                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
-                  <path d="M3 3h18v4H3V3zm2 6h14v12H5V9zm3 2v2h8v-2H8z" fill="currentColor"/>
-                </svg>
-                Archive
-              </a>
-            </nav>
+    <html lang="en" className="h-full">
+      <body className="min-h-screen bg-neutral-50 text-neutral-900 antialiased">
+        {/* Global header (only one) */}
+        <header className="sticky top-0 z-40 w-full border-b border-neutral-200 bg-white/80 backdrop-blur">
+          <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
+            <Link href="/" className="flex items-center gap-3">
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-500 text-white shadow-sm">
+                ✷
+              </span>
+              <span className="text-xl font-extrabold tracking-tight font-playfair">
+                FreshRecipes
+              </span>
+            </Link>
+
+            <Link
+              href="/archive"
+              className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-medium shadow-sm hover:bg-neutral-50 active:scale-[0.98] transition"
+            >
+              <span className="inline-block">🗂</span>
+              <span>Archive</span>
+            </Link>
           </div>
         </header>
 
-        <main className="container page-wrap">{children}</main>
+        <main className="mx-auto max-w-3xl px-4 py-8">{children}</main>
 
-        <footer className="site-footer">
-          <div className="container footer-inner">
-            <p>© {new Date().getFullYear()} FreshRecipes</p>
-            <nav className="footer-links">
-              <a href="/archive">Archive</a>
-              <a href="https://vercel.com" target="_blank" rel="noreferrer">Deploy</a>
-            </nav>
+        {/* Clean footer (no Archive/Deploy links) */}
+        <footer className="border-t border-neutral-200 bg-white">
+          <div className="mx-auto max-w-3xl px-4 py-6 text-sm text-neutral-500">
+            © 2025 FreshRecipes
           </div>
         </footer>
       </body>
     </html>
-  )
+  );
 }
