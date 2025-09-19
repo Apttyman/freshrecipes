@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 
-// --------- Types ----------
+// -------- Types --------
 type Section = { heading?: string; html: string };
 type Recipe = {
   id: number | string;
@@ -11,48 +11,39 @@ type Recipe = {
   imageUrl?: string;
   sections: Section[];
 };
+type GenerateResponse = { recipes?: Recipe[] };
 
-type GenerateResponse = {
-  recipes?: Recipe[];
-  // we ignore any other fields
-};
-
-// ---------- Helpers ----------
+// -------- Clipboard + text helpers --------
 async function copyToClipboard(text: string) {
-  // iOS Safari can be fussy; try the async API first, fall back to a hidden textarea.
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
       return true;
     }
-    throw new Error('navigator.clipboard not available');
+    throw new Error('no async clipboard');
   } catch {
     try {
-      const el = document.createElement('textarea');
-      el.value = text;
-      // Prevent zoom jump
-      el.style.position = 'fixed';
-      el.style.opacity = '0';
-      el.style.pointerEvents = 'none';
-      el.style.left = '-9999px';
-      document.body.appendChild(el);
-      el.focus();
-      el.select();
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
       const ok = document.execCommand('copy');
-      document.body.removeChild(el);
+      document.body.removeChild(ta);
       return ok;
     } catch {
       return false;
     }
   }
 }
-
 function htmlToPlainText(html: string) {
   const div = document.createElement('div');
   div.innerHTML = html;
   return (div.textContent || div.innerText || '').trim();
 }
-
 function recipeToText(r: Recipe) {
   const parts: string[] = [];
   parts.push(`# ${r.title}`);
@@ -63,26 +54,20 @@ function recipeToText(r: Recipe) {
   }
   return parts.join('\n').trim();
 }
-
 function allRecipesToText(recipes: Recipe[]) {
   return recipes.map(recipeToText).join('\n\n---\n\n');
 }
 
-// Local archive under one key. If you later add an API route, we also POST to it.
+// -------- Local archive (fallback) --------
 const LS_KEY = 'freshrecipes_archive_v1';
-
 function pushToLocalArchive(item: Recipe) {
-  if (typeof window === 'undefined') return;
   try {
     const raw = localStorage.getItem(LS_KEY);
     const arr: Recipe[] = raw ? JSON.parse(raw) : [];
     arr.unshift(item);
     localStorage.setItem(LS_KEY, JSON.stringify(arr));
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
-
 async function postArchive(item: Recipe) {
   try {
     const res = await fetch('/api/archive', {
@@ -90,22 +75,27 @@ async function postArchive(item: Recipe) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ recipe: item }),
     });
-    if (!res.ok) throw new Error('archive POST failed');
+    if (!res.ok) throw new Error('archive route not available');
   } catch {
-    // If no route or it fails, we already stored to localStorage.
+    /* ignore – local archive already done */
   }
 }
 
-// ---------- Page ----------
+// -------- Page --------
 export default function Page() {
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [log, setLog] = useState<string[]>([]);
+  const [toast, setToast] = useState<string>('');
 
-  // log helper for the on-screen request log
   const pushLog = useCallback((line: string) => {
-    setLog(prev => [...prev.slice(-200), line]); // keep last ~200 lines
+    setLog(prev => [...prev.slice(-200), line]);
+  }, []);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(''), 1400);
   }, []);
 
   const handleGenerate = useCallback(async () => {
@@ -121,9 +111,8 @@ export default function Page() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as GenerateResponse;
       pushLog('— Raw payload (truncated) —');
-      pushLog(JSON.stringify(json).slice(0, 2000)); // enough to debug on phone
-      const list = json.recipes ?? [];
-      setRecipes(Array.isArray(list) ? list : []);
+      pushLog(JSON.stringify(json).slice(0, 2000));
+      setRecipes(Array.isArray(json.recipes) ? json.recipes : []);
     } catch (err: any) {
       pushLog(`✖ Error: ${err?.message ?? 'Request failed'}`);
     } finally {
@@ -134,8 +123,8 @@ export default function Page() {
   const handleCopyAll = useCallback(async () => {
     if (!recipes.length) return;
     const ok = await copyToClipboard(allRecipesToText(recipes));
-    window.alert(ok ? 'Copied all recipes to clipboard.' : 'Copy failed.');
-  }, [recipes]);
+    showToast(ok ? 'Copied all' : 'Copy failed');
+  }, [recipes, showToast]);
 
   const handleSaveAll = useCallback(async () => {
     if (!recipes.length) return;
@@ -143,29 +132,20 @@ export default function Page() {
       pushToLocalArchive(r);
       await postArchive(r);
     }
-    window.alert('Saved all recipes to archive.');
-  }, [recipes]);
+    showToast('Saved all');
+  }, [recipes, showToast]);
 
   const handleSaveOne = useCallback(async (r: Recipe) => {
     pushToLocalArchive(r);
     await postArchive(r);
-    window.alert(`Saved "${r.title}" to archive.`);
-  }, []);
+    showToast('Saved');
+  }, [showToast]);
 
-  // Compose recipe card body safely
-  const renderRecipeBody = (r: Recipe) => {
-    return r.sections.map((s, idx) => (
-      <section key={idx} className="mt-6">
-        {s.heading ? (
-          <h3 className="text-2xl font-semibold mb-2">{s.heading}</h3>
-        ) : null}
-        {/* We trust our own generator; no user HTML gets in here. */}
-        <div
-          className="prose prose-lg max-w-none leading-7"
-          dangerouslySetInnerHTML={{ __html: s.html }}
-        />
-      </section>
-    ));
+  // touch helper for iOS: make sure the event counts as a user gesture
+  const touchWrap = (fn: () => void) => (e: React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fn();
   };
 
   return (
@@ -177,25 +157,31 @@ export default function Page() {
 
       <div className="mt-6 flex gap-3 flex-wrap">
         <button
+          type="button"
           onClick={handleGenerate}
+          onTouchEnd={touchWrap(handleGenerate)}
           disabled={loading}
-          className="rounded-2xl px-5 py-3 font-semibold text-white bg-black disabled:opacity-50"
+          className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold text-white bg-black disabled:opacity-50"
         >
           {loading ? 'Generating…' : 'Generate'}
         </button>
 
         <button
+          type="button"
           onClick={handleCopyAll}
+          onTouchEnd={touchWrap(handleCopyAll)}
           disabled={!recipes.length}
-          className="rounded-2xl px-5 py-3 font-semibold border border-neutral-300 disabled:opacity-40"
+          className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold border border-neutral-300 disabled:opacity-40"
         >
           Copy all
         </button>
 
         <button
+          type="button"
           onClick={handleSaveAll}
+          onTouchEnd={touchWrap(handleSaveAll)}
           disabled={!recipes.length}
-          className="rounded-2xl px-5 py-3 font-semibold border border-neutral-300 disabled:opacity-40"
+          className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold border border-neutral-300 disabled:opacity-40"
         >
           Save all to archive
         </button>
@@ -218,7 +204,10 @@ export default function Page() {
 
       <div className="mt-6 space-y-8">
         {recipes.map((r) => (
-          <article key={r.id} className="rounded-3xl border border-neutral-200 p-6">
+          <article
+            key={r.id}
+            className="rounded-3xl border border-neutral-200 p-6 relative"
+          >
             <header className="mb-4">
               <h3 className="text-4xl font-black leading-tight">{r.title}</h3>
               {r.author ? (
@@ -226,12 +215,28 @@ export default function Page() {
               ) : null}
             </header>
 
-            {renderRecipeBody(r)}
+            {/* Ensure body cannot overlay buttons */}
+            <div className="relative z-0">
+              {r.sections.map((s, idx) => (
+                <section key={idx} className="mt-6">
+                  {s.heading ? (
+                    <h3 className="text-2xl font-semibold mb-2">{s.heading}</h3>
+                  ) : null}
+                  <div
+                    className="prose prose-lg max-w-none leading-7"
+                    style={{ position: 'relative' }}
+                    dangerouslySetInnerHTML={{ __html: s.html }}
+                  />
+                </section>
+              ))}
+            </div>
 
             <div className="mt-6 flex justify-end">
               <button
+                type="button"
                 onClick={() => handleSaveOne(r)}
-                className="rounded-2xl px-5 py-3 font-semibold border border-neutral-300"
+                onTouchEnd={touchWrap(() => handleSaveOne(r))}
+                className="pointer-events-auto relative z-10 rounded-2xl px-5 py-3 font-semibold border border-neutral-300"
               >
                 Save highlight
               </button>
@@ -246,6 +251,13 @@ export default function Page() {
           {log.join('\n')}
         </pre>
       </div>
+
+      {/* Tiny toast */}
+      {toast ? (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black text-white px-4 py-2 text-sm shadow-lg">
+          {toast}
+        </div>
+      ) : null}
     </main>
   );
 }
