@@ -1,72 +1,109 @@
-import { NextResponse } from 'next/server'
-import SYSTEM_PROMPT from '../../prompt/system-prompt'
+import { NextRequest, NextResponse } from 'next/server'
+import OpenAI from 'openai'
+import FILE_SYSTEM_PROMPT from '../../prompt/system-prompt.txt'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-type GenerateRequest = { query: string }
+// Choose file prompt by default; allow hot override via env
+const SYSTEM_PROMPT = (process.env.SYSTEM_PROMPT && process.env.SYSTEM_PROMPT.trim().length
+  ? process.env.SYSTEM_PROMPT
+  : FILE_SYSTEM_PROMPT
+).trim()
 
-function ok<T>(data: T) {
-  return NextResponse.json(data, { status: 200, headers: { 'Cache-Control': 'no-store' } })
-}
-function bad(message: string, status = 400) {
-  return NextResponse.json({ recipes: [], error: message }, { status, headers: { 'Cache-Control': 'no-store' } })
+const MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'
+
+function missing(key: string) {
+  return !process.env[key] || process.env[key]!.trim().length === 0
 }
 
-export async function POST(req: Request) {
+/**
+ * Simple health check
+ */
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    model: MODEL,
+    openaiKeyPresent: !missing('OPENAI_API_KEY'),
+    promptSource: process.env.SYSTEM_PROMPT?.trim().length ? 'env' : 'file',
+  })
+}
+
+/**
+ * POST /api/generate
+ * Body: { query: string } or { input: string }
+ * Returns: { html: string }
+ */
+export async function POST(req: NextRequest) {
+  if (missing('OPENAI_API_KEY')) {
+    return NextResponse.json(
+      { error: 'OPENAI_API_KEY is not set' },
+      { status: 500 }
+    )
+  }
+
+  let body: any
   try {
-    const apiKey = process.env.OPENAI_API_KEY
-    if (!apiKey) return bad('Missing OPENAI_API_KEY.', 500)
+    body = await req.json()
+  } catch {
+    return NextResponse.json(
+      { error: 'Invalid JSON body' },
+      { status: 400 }
+    )
+  }
 
-    let body: GenerateRequest | null = null
-    try { body = await req.json() } catch { return bad('POST JSON with { "query": string }', 400) }
-    const query = (body?.query || '').trim()
-    if (!query) return bad('Query is required.', 400)
+  const userQuery: string =
+    (typeof body?.query === 'string' && body.query.trim()) ||
+    (typeof body?.input === 'string' && body.input.trim()) ||
+    ''
 
-    // Allow env override but default to the compiled-in string
-    const systemPrompt = process.env.SYSTEM_PROMPT || SYSTEM_PROMPT
+  if (!userQuery) {
+    return NextResponse.json(
+      { error: 'Missing "query" (or "input") field' },
+      { status: 400 }
+    )
+  }
 
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: query },
-        ],
-        temperature: 0.7,
-        // Do NOT force JSON here; we want to allow full HTML OR JSON.
-      }),
+  try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+
+    const completion = await openai.chat.completions.create({
+      model: MODEL,
+      temperature: 0.3,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content:
+            `Input directives:\n` +
+            userQuery +
+            `\n\nReturn ONLY the final complete HTML document as instructed in the system prompt.`,
+        },
+      ],
     })
 
-    if (!resp.ok) {
-      const txt = await resp.text().catch(() => '')
-      return bad(`Model request failed (${resp.status}). ${txt.slice(0, 300)}`, 502)
+    const html =
+      completion.choices?.[0]?.message?.content?.trim() || ''
+
+    if (!html.startsWith('<!DOCTYPE html>') && !html.startsWith('<html')) {
+      // Guard rail: ensure caller receives HTML even if the model deviates
+      return NextResponse.json(
+        {
+          error:
+            'Model did not return a complete HTML document. Check the SYSTEM_PROMPT and input.',
+          preview: html.slice(0, 5000),
+        },
+        { status: 502 }
+      )
     }
 
-    const json = await resp.json().catch(() => null as any)
-    const content: string | undefined = json?.choices?.[0]?.message?.content
-
-    // Case A: complete HTML document -> return { html } for your iframe
-    if (typeof content === 'string' && content.includes('<html') && content.includes('</html>')) {
-      return ok({ html: content })
-    }
-
-    // Case B: recipes JSON -> return { recipes } for your JSON renderer
-    try {
-      const parsed = typeof content === 'string' ? JSON.parse(content) : content
-      if (Array.isArray(parsed?.recipes)) return ok({ recipes: parsed.recipes })
-    } catch {
-      /* not JSON; fall through */
-    }
-
-    return bad('Model did not return a complete HTML document or recipes.', 502)
+    return NextResponse.json({ html })
   } catch (err: any) {
-    console.error('generate route error:', err)
-    return bad(`Internal error while generating recipes. ${err?.message || ''}`, 500)
+    const msg =
+      typeof err?.message === 'string' ? err.message : 'Unknown error'
+    return NextResponse.json(
+      { error: `OpenAI request failed: ${msg}` },
+      { status: 500 }
+    )
   }
 }
