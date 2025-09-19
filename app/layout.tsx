@@ -1,64 +1,52 @@
 // app/layout.tsx
-import type { Metadata } from "next";
-import Link from "next/link";
 import "./globals.css";
-import { Playfair_Display } from "next/font/google";
+import Link from "next/link";
+import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "FreshRecipes",
-  description: "Fetch chef-grade recipes with full HTML and real images.",
+  description: "Fetch chef-grade recipes and render them beautifully.",
 };
 
-const playfair = Playfair_Display({
-  subsets: ["latin"],
-  variable: "--font-serif",
-  weight: ["400", "700", "900"],
-  display: "swap",
-});
+export const buttonClass =
+  "inline-flex items-center justify-center rounded-xl px-5 py-3 text-white " +
+  "bg-indigo-600 hover:bg-indigo-600/90 active:bg-indigo-700 " +
+  "shadow-[0_6px_20px_rgba(79,70,229,.3)] transition-colors font-semibold";
 
-// Shared button style (use this in page.tsx too for uniformity)
-const btn =
-  "inline-flex items-center justify-center h-11 px-5 rounded-xl " +
-  "bg-indigo-600 text-white font-semibold tracking-wide " +
-  "shadow-sm shadow-indigo-300/40 hover:bg-indigo-500 " +
-  "focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 " +
-  "transition-colors";
+export const secondaryButtonClass =
+  "inline-flex items-center justify-center rounded-xl px-5 py-3 " +
+  "bg-white text-neutral-800 border border-neutral-300 hover:bg-neutral-50 transition-colors font-semibold";
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export const disabledButtonClass =
+  "inline-flex items-center justify-center rounded-xl px-5 py-3 " +
+  "bg-neutral-100 text-neutral-400 border border-neutral-200 cursor-not-allowed font-semibold";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={playfair.variable}>
-      <body className="min-h-dvh bg-neutral-50 text-neutral-900 antialiased">
-        {/* Global header — only one */}
-        <header className="sticky top-0 z-30 bg-white/80 backdrop-blur border-b border-neutral-200">
-          <div className="mx-auto max-w-3xl px-4 h-16 flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-3 select-none">
-              {/* Simple gradient squircle logo */}
-              <span
-                aria-hidden
-                className="h-8 w-8 rounded-xl bg-gradient-to-br from-indigo-500 via-fuchsia-500 to-amber-400 shadow-sm"
-              />
-              <span className="text-xl font-black leading-none"
-                style={{ fontFamily: "var(--font-serif)" }}>
-                FreshRecipes
-              </span>
+    <html lang="en">
+      <body className="min-h-dvh bg-neutral-50 text-neutral-900">
+        {/* Header */}
+        <header className="sticky top-0 z-20 border-b border-neutral-200 bg-white/90 backdrop-blur">
+          <div className="mx-auto max-w-5xl px-4 sm:px-6 h-16 flex items-center justify-between">
+            <Link href="/" className="flex items-center gap-3">
+              <span className="h-8 w-8 rounded-xl bg-gradient-to-br from-indigo-400 to-violet-500 grid place-items-center text-white">✶</span>
+              <span className="text-[20px] sm:text-[22px] font-extrabold tracking-tight">FreshRecipes</span>
             </Link>
-
-            <Link href="/archive" className={btn} prefetch>
-              Archive
+            <Link
+              href="/archive"
+              className={secondaryButtonClass}
+            >
+              🗂️&nbsp;Archive
             </Link>
           </div>
         </header>
 
-        {/* Page content */}
-        <main className="mx-auto max-w-3xl px-4 py-8">{children}</main>
+        {/* Page */}
+        <main className="mx-auto max-w-5xl px-4 sm:px-6 py-8">{children}</main>
 
-        {/* Single footer */}
+        {/* Footer */}
         <footer className="border-t border-neutral-200 bg-white">
-          <div className="mx-auto max-w-3xl px-4 py-6 text-sm text-neutral-600">
+          <div className="mx-auto max-w-5xl px-4 sm:px-6 py-6 text-sm text-neutral-500">
             © 2025 FreshRecipes
           </div>
         </footer>
@@ -66,6 +54,3 @@ export default function RootLayout({
     </html>
   );
 }
-
-// Export the class so page.tsx can match button styling if needed
-export const buttonClass = btn;
