@@ -26,9 +26,8 @@ export default function HomePage() {
       })
       const json = await resp.json()
       setResult(json)
-      // After HTML mounts, normalize images
       setTimeout(() => ensureImages(), 0)
-    } catch (e) {
+    } catch {
       setResult({ html: '', data: null, error: 'Request failed. Try again.' })
     } finally {
       setLoading(false)
@@ -41,47 +40,16 @@ export default function HomePage() {
     const imgs = root.querySelectorAll('img')
     imgs.forEach((img) => {
       const el = img as HTMLImageElement
-      // Absolutely critical: do NOT rewrite URLs; just make them reliable
       el.loading = 'lazy'
       el.decoding = 'async'
       el.referrerPolicy = 'no-referrer'
       el.crossOrigin = 'anonymous'
-      // keep text even if an image is broken
       el.addEventListener('error', () => {
-        el.classList.add('img-error')
-        // Do NOT remove surrounding text/steps
+        el.classList.add('img-error') // text remains; we do not strip anything
       })
     })
   }
 
-  async function copyHtml() {
-    if (!result?.html) return
-    try {
-      await navigator.clipboard.writeText(result.html)
-      toast('Copied HTML to clipboard')
-    } catch {
-      toast('Copy failed')
-    }
-  }
-
-  function toast(msg: string) {
-    // super light inline toast
-    const div = document.createElement('div')
-    div.textContent = msg
-    div.style.position = 'fixed'
-    div.style.bottom = '16px'
-    div.style.left = '50%'
-    div.style.transform = 'translateX(-50%)'
-    div.style.padding = '10px 14px'
-    div.style.background = 'rgba(31,27,22,.9)'
-    div.style.color = '#fff'
-    div.style.borderRadius = '999px'
-    div.style.zIndex = '1000'
-    document.body.appendChild(div)
-    setTimeout(() => div.remove(), 1500)
-  }
-
-  // Optional hooks for your existing archive endpoints (no behavior change if absent)
   async function saveAllToArchive() {
     if (!result?.html) return
     try {
@@ -91,14 +59,13 @@ export default function HomePage() {
         body: JSON.stringify({
           query: result?.data?.query ?? query,
           html: result.html,
-          // pass through recipes meta for your archive UI if it uses it
           recipes: result?.data?.recipes ?? [],
         }),
       })
       if (!resp.ok) throw new Error('bad status')
       toast('Saved to Archive')
     } catch {
-      // Fallback: download as file so user never loses work
+      // Fallback: download HTML so the user never loses work
       const blob = new Blob([result!.html], { type: 'text/html;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -108,64 +75,62 @@ export default function HomePage() {
       a.click()
       URL.revokeObjectURL(url)
       a.remove()
-      toast('Downloaded HTML (Archive API unavailable)')
+      toast('Downloaded HTML')
     }
+  }
+
+  function toast(msg: string) {
+    const div = document.createElement('div')
+    div.textContent = msg
+    Object.assign(div.style, {
+      position: 'fixed', bottom: '16px', left: '50%', transform: 'translateX(-50%)',
+      padding: '10px 14px', background: '#111420', color: '#fff',
+      borderRadius: '12px', zIndex: '1000'
+    } as CSSStyleDeclaration)
+    document.body.appendChild(div)
+    setTimeout(() => div.remove(), 1400)
   }
 
   return (
     <div className="stack">
-      {/* Query input */}
-      <section className="query-card">
-        <div className="query-row">
+      {/* Query */}
+      <section className="card">
+        <div className="query-grid">
           <input
             className="input"
-            type="text"
-            placeholder="e.g., 3 top chef pasta recipes with step photos"
+            placeholder="Describe what to fetch (e.g., ‘3 Michelin-level pasta recipes with step photos’)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') generate() }}
             aria-label="Recipe query"
           />
-          <button className="btn" type="button" onClick={generate} disabled={loading}>
-            {loading ? 'Generating…' : 'Generate'}
-          </button>
+          <div className="controls">
+            <button className="btn" onClick={generate} disabled={loading}>
+              {loading ? 'Generating…' : 'Generate'}
+            </button>
+            <button className="btn btn-ghost" onClick={saveAllToArchive} disabled={!result?.html}>
+              Save
+            </button>
+            <a className="btn btn-ghost" href="/archive">Open Archive</a>
+          </div>
         </div>
-        <div className="action-row">
-          <button className="btn btn-outline" type="button" onClick={() => { setQuery('3 top chef pasta recipes with step photos'); }}>
-            Try Example
-          </button>
-          <span className="badge">Keeps your system prompt intact</span>
-          <a className="btn btn-secondary" href="/archive">
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden><path d="M3 3h18v4H3V3zm2 6h14v12H5V9zm3 2v2h8v-2H8z" fill="currentColor"/></svg>
-            Open Archive
-          </a>
-        </div>
-        <p className="help">We’ll render the model’s full Food52-style HTML and keep all steps even if some images fail to load. Real images only—no rewriting.</p>
       </section>
 
       {/* Results */}
       {result?.error && (
-        <section className="rendered">
-          <strong>Error:</strong> {result.error}
+        <section className="card rendered" role="status" aria-live="polite">
+          <div className="canvas"><strong>Error:</strong> {result.error}</div>
         </section>
       )}
 
       {result?.html && (
-        <section className="rendered">
-          <div className="model-toolbar">
-            <button className="btn btn-ghost" type="button" onClick={copyHtml}>
-              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v16h13a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 18H8V7h11v16z" fill="currentColor"/></svg>
-              Copy HTML
-            </button>
-            <button className="btn" type="button" onClick={saveAllToArchive}>
-              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden><path d="M5 20h14v-8H5v8zm0-10h14V6H5v4zm4 7h6v-2H9v2z" fill="currentColor"/></svg>
-              Save All to Archive
-            </button>
+        <section className="card rendered">
+          <div className="toolbar">
+            <button className="btn btn-ghost" onClick={saveAllToArchive}>Save</button>
+            <a className="btn" href="/archive">Open Archive</a>
           </div>
-
-          {/* We render the model’s FULL HTML document inside an iframe-like sandbox container.
-              To preserve your current structure, we just insert the HTML directly. */}
           <div
+            className="canvas"
             ref={renderedRef}
             dangerouslySetInnerHTML={{ __html: result.html }}
           />
