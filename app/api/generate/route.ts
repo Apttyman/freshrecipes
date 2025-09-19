@@ -8,6 +8,35 @@ export const dynamic = 'force-dynamic'
 
 type GenerateRequest = { query: string }
 
+// ===== Types for the structured payload we expect back =====
+export type StepImage = { url: string; alt?: string | null; role?: string | null }
+export type Step = { num: number; text: string; images?: StepImage[] }
+export type IngredientSection = { section?: string | null; items: string[] }
+export type RecipeData = {
+  id: string
+  title: string
+  heroImage?: { url: string; alt?: string | null } | null
+  chef?: {
+    name?: string | null
+    background?: string | null
+    source?: { name?: string | null; url?: string | null } | null
+  } | null
+  description?: { paragraphs: string[]; tone?: string | null } | null
+  ingredients: IngredientSection[]
+  instructions: { stepCount: number; steps: Step[] }
+  media?: { gallery?: StepImage[] } | null
+  meta?: {
+    yield?: string | null
+    time?: { active?: string | null; total?: string | null } | null
+    cuisine?: string | null
+    tags?: string[]
+  } | null
+}
+export type ModelReturn = {
+  html: string
+  data: { query: string; recipes: RecipeData[] }
+}
+
 function ok<T>(data: T) {
   return NextResponse.json(data, {
     status: 200,
@@ -16,13 +45,13 @@ function ok<T>(data: T) {
 }
 function bad(message: string, status = 400) {
   return NextResponse.json(
-    { html: '', error: message },
+    { html: '', data: null, error: message },
     { status, headers: { 'Cache-Control': 'no-store' } }
   )
 }
 
+// Try to load your authored system prompt so we don't regress style/content.
 async function loadSystemPrompt(): Promise<string> {
-  // Try a few likely locations for your system-prompt.txt
   const candidates = [
     join(process.cwd(), 'system-prompt.txt'),
     join(process.cwd(), 'app', 'lib', 'system-prompt.txt'),
@@ -34,25 +63,74 @@ async function loadSystemPrompt(): Promise<string> {
       if (s?.trim()) return s
     } catch {}
   }
-  // Fallback (keeps the route functional if the file moves)
-  return `You are to fetch {input directives} and return a COMPLETE valid HTML document
-  (<!DOCTYPE html> … </html>) that matches the Food52-like styling, chef bio,
-  multi-paragraph intro, ingredients, and exact step count. Use only real image
-  URLs from the source; omit images if not available. Do NOT return Markdown or JSON.`
+  // Fallback prompt (kept short, we’ll augment with the JSON+HTML contract below)
+  return `Fetch {input directives}. Output complete Food52-style HTML (chef bio, multi-paragraph intro, exact step counts, real images) — no placeholders.`
+}
+
+// Tight, explicit contract for the hybrid return.
+function buildHybridContractPrompt(authoredSystem: string) {
+  return `
+${authoredSystem.trim()}
+
+CRITICAL OUTPUT CONTRACT — RETURN ONE JSON OBJECT WITH:
+{
+  "html": "<!DOCTYPE html> ... FULL Food52-style HTML document ... </html>",
+  "data": {
+    "query": "user input that you fulfilled",
+    "recipes": [
+      {
+        "id": "stable-id-or-slug",
+        "title": "Dish name",
+        "heroImage": { "url": "https://...", "alt": "..." } | null,
+        "chef": {
+          "name": "Chef Name",
+          "background": "Bio/context paragraph(s)",
+          "source": { "name": "Site/Publication", "url": "https://..." }
+        },
+        "description": { "paragraphs": ["para1", "para2", "para3"], "tone": "Food52-like" },
+        "ingredients": [
+          { "section": "Main", "items": ["..."] },
+          { "section": "Garnish", "items": ["..."] }
+        ],
+        "instructions": {
+          "stepCount": <int>,
+          "steps": [
+            { "num": 1, "text": "Full step text...", "images": [{"url":"https://...","alt":"...","role":"step"}] }
+            // EXACT 1:1 with the original step count. NEVER merge or drop steps.
+          ]
+        },
+        "media": { "gallery": [{"url":"https://...","alt":"..."}] },
+        "meta": {
+          "yield": "4 servings",
+          "time": { "active": "25m", "total": "45m" },
+          "cuisine": "Italian",
+          "tags": ["pasta", "weeknight"]
+        }
+      }
+    ]
+  }
+}
+
+STRICT RULES:
+- "html" must be a COMPLETE, valid HTML document with inline <style>, no external CSS/JS.
+- "data" must describe EXACTLY the same recipes as "html" (same titles, step count, etc.).
+- Use only real image URLs from the source; if an image is unavailable, omit it silently BUT KEEP THE STEP TEXT.
+- Return ONLY JSON (no markdown fences, no commentary).`
+    .replace(/\r/g, '')
+    .trim()
 }
 
 export async function POST(req: Request) {
   try {
-    // 1) Validate env
-    const apiKey = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY
+    const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) {
       return bad(
-        'Missing model API key (OPENAI_API_KEY or ANTHROPIC_API_KEY). Set in Vercel → Settings → Environment Variables and redeploy.',
+        'Missing OPENAI_API_KEY. Set it in Vercel → Settings → Environment Variables (Production) and redeploy.',
         500
       )
     }
 
-    // 2) Parse body
+    // Parse input
     let body: GenerateRequest | null = null
     try {
       body = await req.json()
@@ -62,33 +140,33 @@ export async function POST(req: Request) {
     const query = (body?.query || '').trim()
     if (!query) return bad('Query is required.', 400)
 
-    // 3) Load your ORIGINAL system prompt from file
-    const systemPrompt = await loadSystemPrompt()
+    // Build system instructions (author + hybrid contract)
+    const authored = await loadSystemPrompt()
+    const systemPrompt = buildHybridContractPrompt(authored)
 
-    // 4) Call OpenAI (adjust if you prefer Anthropic)
-    const providerUrl =
-      process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/chat/completions'
+    // OpenAI Chat Completions (json_object)
+    const providerUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/chat/completions'
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
     const resp = await fetch(providerUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY!}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model,
-        // IMPORTANT: do NOT force JSON here — your prompt returns HTML.
+        temperature: 0.6,
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           {
             role: 'user',
             content:
-              `Fetch ${query}. Return ONLY a complete, valid HTML document per the system prompt. ` +
-              `No Markdown fences, no JSON, no explanations.`,
+              `Fetch ${query}. Follow the CRITICAL OUTPUT CONTRACT exactly. ` +
+              `Ensure "html" and "data" match 1:1 and that stepCount equals steps.length.`,
           },
         ],
-        temperature: 0.7,
       }),
     })
 
@@ -97,15 +175,36 @@ export async function POST(req: Request) {
       return bad(`Model request failed (${resp.status}). ${txt.slice(0, 400)}`, 502)
     }
 
-    const json = await resp.json().catch(() => null as any)
-    const html = json?.choices?.[0]?.message?.content ?? ''
-
-    if (typeof html !== 'string' || !html.toLowerCase().includes('<html')) {
-      return bad('Model did not return a complete HTML document.', 502)
+    // Chat Completions: JSON will be inside choices[0].message.content
+    const raw = await resp.json().catch(() => null as any)
+    const content = raw?.choices?.[0]?.message?.content
+    if (!content || typeof content !== 'string') {
+      return bad('Model returned empty content.', 502)
     }
 
-    // 5) Send the raw HTML to the client
-    return ok({ html })
+    let parsed: ModelReturn | null = null
+    try {
+      parsed = JSON.parse(content) as ModelReturn
+    } catch {
+      return bad('Model did not return valid JSON.', 502)
+    }
+
+    // Basic validations to protect downstream UI
+    if (!parsed?.html || typeof parsed.html !== 'string' || !parsed.html.toLowerCase().includes('<html')) {
+      return bad('Model did not return a complete HTML document in "html".', 502)
+    }
+    if (!parsed.data || !Array.isArray(parsed.data.recipes)) {
+      return bad('Model did not include a valid "data.recipes" array.', 502)
+    }
+    for (const r of parsed.data.recipes) {
+      const stepCount = r?.instructions?.stepCount
+      const steps = r?.instructions?.steps
+      if (!Array.isArray(steps) || typeof stepCount !== 'number' || steps.length !== stepCount) {
+        return bad('Validation failed: instructions.stepCount must equal steps.length.', 502)
+      }
+    }
+
+    return ok(parsed)
   } catch (err: any) {
     console.error('generate route error:', err)
     return bad('Internal error while generating recipes.', 500)
