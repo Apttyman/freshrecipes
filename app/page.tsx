@@ -26,7 +26,7 @@ export default function HomePage() {
       })
       const json = await resp.json()
       setResult(json)
-      setTimeout(() => ensureImages(), 0)
+      requestAnimationFrame(() => ensureImages())
     } catch {
       setResult({ html: '', data: null, error: 'Request failed. Try again.' })
     } finally {
@@ -45,7 +45,7 @@ export default function HomePage() {
       el.referrerPolicy = 'no-referrer'
       el.crossOrigin = 'anonymous'
       el.addEventListener('error', () => {
-        el.classList.add('img-error') // text remains; we do not strip anything
+        el.style.opacity = '0.0' // don’t hide text/steps; only fade broken image
       })
     })
   }
@@ -65,16 +65,14 @@ export default function HomePage() {
       if (!resp.ok) throw new Error('bad status')
       toast('Saved to Archive')
     } catch {
-      // Fallback: download HTML so the user never loses work
+      // Fallback download to never lose work
       const blob = new Blob([result!.html], { type: 'text/html;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       a.download = `recipes-${Date.now()}.html`
-      document.body.appendChild(a)
-      a.click()
+      document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(url)
-      a.remove()
       toast('Downloaded HTML')
     }
   }
@@ -83,9 +81,9 @@ export default function HomePage() {
     const div = document.createElement('div')
     div.textContent = msg
     Object.assign(div.style, {
-      position: 'fixed', bottom: '16px', left: '50%', transform: 'translateX(-50%)',
-      padding: '10px 14px', background: '#111420', color: '#fff',
-      borderRadius: '12px', zIndex: '1000'
+      position:'fixed', bottom:'16px', left:'50%', transform:'translateX(-50%)',
+      padding:'10px 14px', background:'#121420', color:'#fff',
+      borderRadius:'12px', zIndex:'1000', fontWeight:'700'
     } as CSSStyleDeclaration)
     document.body.appendChild(div)
     setTimeout(() => div.remove(), 1400)
@@ -96,38 +94,38 @@ export default function HomePage() {
       {/* Query */}
       <section className="card">
         <div className="query-grid">
-          <input
-            className="input"
-            placeholder="Describe what to fetch (e.g., ‘3 Michelin-level pasta recipes with step photos’)"
+          <textarea
+            className="input textarea"
+            placeholder="Describe what to fetch (e.g., ‘3 Michelin chef pasta recipes with step photos’)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') generate() }}
             aria-label="Recipe query"
           />
           <div className="controls">
-            <button className="btn" onClick={generate} disabled={loading}>
+            <button className="btn btn-primary" onClick={generate} disabled={loading}>
               {loading ? 'Generating…' : 'Generate'}
             </button>
-            <button className="btn btn-ghost" onClick={saveAllToArchive} disabled={!result?.html}>
+            <button className="btn btn-outline" onClick={saveAllToArchive} disabled={!result?.html}>
               Save
             </button>
-            <a className="btn btn-ghost" href="/archive">Open Archive</a>
+            <a className="btn btn-outline" href="/archive">Open Archive</a>
           </div>
         </div>
       </section>
 
-      {/* Results */}
+      {/* Error */}
       {result?.error && (
         <section className="card rendered" role="status" aria-live="polite">
           <div className="canvas"><strong>Error:</strong> {result.error}</div>
         </section>
       )}
 
+      {/* Results */}
       {result?.html && (
         <section className="card rendered">
           <div className="toolbar">
-            <button className="btn btn-ghost" onClick={saveAllToArchive}>Save</button>
-            <a className="btn" href="/archive">Open Archive</a>
+            <button className="btn btn-outline" onClick={saveAllToArchive}>Save</button>
+            <a className="btn btn-primary" href="/archive">Open Archive</a>
           </div>
           <div
             className="canvas"
