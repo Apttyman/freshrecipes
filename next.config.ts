@@ -1,14 +1,14 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
+/** @type {import('next').NextConfig} */
+const nextConfig = {
   reactStrictMode: true,
-  images: {
-    remotePatterns: [
-      { protocol: "https", hostname: "res.cloudinary.com" },
-      { protocol: "https", hostname: "**" },
-      { protocol: "http", hostname: "**" }
-    ]
-  }
+  webpack: (config) => {
+    // Allow importing plain text files as raw strings: import txt from './file.txt'
+    config.module.rules.push({
+      test: /\.txt$/i,
+      type: 'asset/source',
+    });
+    return config;
+  },
 };
 
-export default nextConfig;
+module.exports = nextConfig;
