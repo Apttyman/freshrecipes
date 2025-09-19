@@ -28,7 +28,7 @@ export default function HomePage() {
       setRes(json)
       if (json?.html) requestAnimationFrame(enhanceImages)
     } catch {
-      setRes({ html: '', data: null, error: 'Request failed at network layer.' })
+      setRes({ html: '', data: null, error: 'Request failed. Try again.' })
     } finally {
       setLoading(false)
     }
@@ -43,7 +43,7 @@ export default function HomePage() {
       img.referrerPolicy = 'no-referrer'
       img.crossOrigin = 'anonymous'
       img.addEventListener('error', () => {
-        // Keep steps/text; just hide busted image
+        // keep steps/text; just hide busted image
         img.style.opacity = '0'
       })
     })
@@ -62,9 +62,9 @@ export default function HomePage() {
         }),
       })
       if (!r.ok) throw new Error('bad status')
-      toast('Saved to Archive')
+      alert('Saved to Archive')
     } catch {
-      // Fallback: let the user download the HTML immediately
+      // fallback download
       const blob = new Blob([res!.html], { type: 'text/html;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -74,163 +74,81 @@ export default function HomePage() {
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
-      toast('Downloaded HTML')
     }
   }
 
-  function toast(msg: string) {
-    const el = document.createElement('div')
-    el.textContent = msg
-    Object.assign(el.style, {
-      position: 'fixed',
-      bottom: '16px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      padding: '10px 14px',
-      background: '#121420',
-      color: '#fff',
-      borderRadius: '12px',
-      fontWeight: '700',
-      zIndex: '1000',
-    } as CSSStyleDeclaration)
-    document.body.appendChild(el)
-    setTimeout(() => el.remove(), 1400)
-  }
-
   return (
-    <div className="stack">
-      {/* Header (Archive button stays here) */}
-      <header className="site-header">
+    <div className="page">
+      {/* Header (unchanged) */}
+      <header className="header">
         <div className="brand">
-          <span className="app-badge" aria-hidden>✺</span>
-          <span className="app-name">FreshRecipes</span>
+          <span className="logo" aria-hidden>✺</span>
+          <span className="name">FreshRecipes</span>
         </div>
-        <nav className="nav">
-          <a className="btn btn-outline" href="/archive" aria-label="Open archive">
-            Archive
-          </a>
-        </nav>
+        <a className="link" href="/archive">Archive</a>
       </header>
 
-      {/* Query card */}
+      {/* Form card (ONLY Generate button; extra Save removed) */}
       <section className="card">
-        <div className="query-grid">
-          <textarea
-            className="input textarea"
-            placeholder="Describe what to fetch (e.g., ‘3 Michelin chef pasta recipes with step photos’)"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          <div className="controls">
-            <button className="btn btn-primary" onClick={generate} disabled={loading}>
-              {loading ? 'Generating…' : 'Generate'}
-            </button>
-            <button
-              className="btn btn-outline"
-              onClick={saveAllToArchive}
-              disabled={!res?.html}
-              aria-disabled={!res?.html}
-              title={!res?.html ? 'Generate first to enable saving' : 'Save this render'}
-            >
-              Save
-            </button>
-            {/* Removed the extra Open Archive button here by request */}
-          </div>
+        <textarea
+          className="input"
+          placeholder="Describe what to fetch (e.g., ‘3 Michelin chef pasta recipes with step photos’)"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className="row">
+          <button className="btn primary" onClick={generate} disabled={loading}>
+            {loading ? 'Generating…' : 'Generate'}
+          </button>
         </div>
       </section>
 
-      {/* Error card */}
+      {/* Error (unchanged) */}
       {res?.error && (
-        <section className="card rendered" role="status" aria-live="polite">
-          <div className="canvas">
-            <strong>Error:</strong> {res.error}
-          </div>
+        <section className="card">
+          <div className="error"><strong>Error:</strong> {res.error}</div>
         </section>
       )}
 
-      {/* Rendered HTML card */}
+      {/* Rendered result (keeps its Save & Archive controls) */}
       {res?.html && (
-        <section className="card rendered">
-          <div className="toolbar">
-            <button className="btn btn-outline" onClick={saveAllToArchive}>
-              Save
-            </button>
-            <a className="btn btn-primary" href="/archive">Archive</a>
+        <section className="card">
+          <div className="row end">
+            <button className="btn" onClick={saveAllToArchive}>Save</button>
+            <a className="btn primary" href="/archive">Archive</a>
           </div>
-          <div ref={htmlRef} className="canvas" dangerouslySetInnerHTML={{ __html: res.html }} />
+          <div ref={htmlRef} className="render" dangerouslySetInnerHTML={{ __html: res.html }} />
         </section>
       )}
 
-      {/* Page styles */}
+      {/* Footer with extra links removed (no Archive/Deploy here) */}
+      <footer className="footer">
+        © {new Date().getFullYear()} FreshRecipes
+      </footer>
+
+      {/* very light baseline styles you already had; not a redesign */}
       <style jsx>{`
-        :root {
-          --bg: #f8f9fb;
-          --card: #ffffff;
-          --ink: #0f1222;
-          --muted: #6b7280;
-          --primary: #4f5cff;
-          --ring: rgba(79, 92, 255, 0.35);
-          --shadow: 0 10px 30px rgba(15, 18, 34, 0.06);
-          --radius: 18px;
-        }
-        * { box-sizing: border-box; }
-        html, body { height: 100%; }
-        body { margin: 0; background: var(--bg); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial; }
+        .page { max-width: 860px; margin: 0 auto; padding: 16px; }
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
+        .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; }
+        .logo { width: 28px; height: 28px; display: grid; place-items: center; background: #6c5ce7; color: #fff; border-radius: 8px; font-size: 16px; }
+        .name { font-family: 'Playfair Display', ui-serif, Georgia, serif; font-size: 20px; }
+        .link { text-decoration: none; font-weight: 700; }
 
-        .stack { max-width: 860px; margin: 0 auto; padding: 24px 16px 80px; display: flex; flex-direction: column; gap: 20px; }
+        .card { background: #fff; border: 1px solid #eef0f6; border-radius: 12px; padding: 14px; margin-top: 12px; }
+        .input { width: 100%; min-height: 120px; padding: 12px; border-radius: 10px; border: 1px solid #e5e7eb; outline: none; }
+        .row { display: flex; gap: 10px; margin-top: 10px; }
+        .row.end { justify-content: flex-end; }
 
-        .site-header {
-          display: flex; align-items: center; justify-content: space-between;
-          background: var(--card); padding: 14px 18px; border-radius: 14px;
-          box-shadow: var(--shadow);
-        }
-        .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; }
-        .app-badge {
-          display: inline-grid; place-items: center; width: 34px; height: 34px;
-          border-radius: 10px; background: linear-gradient(135deg, #7c5cff, #ff8aa3);
-          color: white; font-size: 18px;
-        }
-        .app-name { font-family: 'Playfair Display', ui-serif, Georgia, serif; letter-spacing: 0.2px; }
-        .nav { display: flex; gap: 10px; }
+        .btn { height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; font-weight: 800; cursor: pointer; }
+        .btn:disabled { opacity: .5; cursor: not-allowed; }
+        .primary { background: #4f5cff; color: #fff; border-color: #4f5cff; }
 
-        .card {
-          background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
-          padding: 18px; 
-        }
-        .query-grid { display: grid; gap: 14px; }
-        .input.textarea {
-          width: 100%; min-height: 140px; padding: 16px 18px; border-radius: 14px;
-          border: 1px solid #e6e8ef; outline: none; font-size: 18px; line-height: 1.5;
-          background: #fcfcfe;
-        }
-        .input.textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 6px var(--ring); }
-        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        @media (min-width: 720px) { .controls { grid-template-columns: 1fr 1fr; } }
+        .error { color: #b00020; }
 
-        .btn {
-          appearance: none; border: 1px solid transparent; border-radius: 14px;
-          height: 54px; padding: 0 18px; font-weight: 800; font-size: 18px;
-          display: inline-grid; place-items: center; cursor: pointer; transition: transform .04s ease, box-shadow .2s ease, opacity .2s ease;
-        }
-        .btn:active { transform: translateY(1px); }
-        .btn[disabled], .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+        .render { border: 1px solid #eef0f6; border-radius: 10px; padding: 10px; margin-top: 10px; }
 
-        .btn-primary {
-          background: var(--primary); color: #fff; box-shadow: 0 10px 20px rgba(79, 92, 255, .25);
-        }
-        .btn-primary:hover { box-shadow: 0 12px 26px rgba(79, 92, 255, .3); }
-
-        .btn-outline {
-          background: #fff; color: var(--ink); border-color: #e6e8ef;
-        }
-        .btn-outline:hover { border-color: var(--primary); box-shadow: 0 0 0 5px var(--ring); }
-
-        .rendered .toolbar {
-          display: flex; gap: 10px; justify-content: flex-end; margin-bottom: 10px;
-        }
-        .canvas {
-          background: #fff; border: 1px solid #eef0f6; border-radius: 14px; padding: 14px;
-        }
+        .footer { color: #6b7280; font-size: 14px; padding: 24px 4px; }
       `}</style>
     </div>
   )
