@@ -1,3 +1,5 @@
+const SYSTEM_PROMPT = 
+
 Prompt:
 
 Fetch {input directives}. For each recipe, provide:
@@ -40,3 +42,7 @@ Goal:
 - Match the **structure and detail of the source recipe exactly** (step count, step length, images).
 - Improve readability and design polish, but never lose information.
 - Output must be at a level that earns a 10/10 rating from UX designers and art directors, aligned with Food52’s design philosophy.
+
+;
+
+export default SYSTEM_PROMPT;
