@@ -46,14 +46,6 @@ export default function HomePage() {
   return (
     <>
       <div className="card">
-        <div className="title-row">
-          <div className="title">
-            <span className="dot" aria-hidden />
-            <span>FreshRecipes</span>
-          </div>
-          <div style={{ width: 112, height: 40 }} />
-        </div>
-
         <div className="stack">
           <label className="textarea-wrap" htmlFor="query">
             <textarea
@@ -68,13 +60,9 @@ export default function HomePage() {
             {busy ? 'Working…' : 'Generate'}
           </button>
 
-          {/* Greyed Save button (disabled until valid HTML) */}
           <button className="btn btn-ghost" disabled={!canSave}>
             Save
           </button>
-
-          {/* Open Archive button inside card */}
-          <a className="btn-link" href="/archive">Open Archive</a>
         </div>
       </div>
 
