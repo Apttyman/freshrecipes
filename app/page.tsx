@@ -21,7 +21,6 @@ export default function HomePage() {
         body: JSON.stringify({ query }),
       });
 
-      // Expect server to return { html: string } OR { error }
       const data = await res.json().catch(() => ({} as any));
 
       if (!res.ok) {
@@ -36,9 +35,8 @@ export default function HomePage() {
         return;
       }
 
-      // If the HTML was returned, allow Save; rendering happens elsewhere in your app
       setCanSave(true);
-    } catch (e: any) {
+    } catch {
       setError('Request failed. Try again.');
     } finally {
       setBusy(false);
@@ -50,10 +48,9 @@ export default function HomePage() {
       <div className="card">
         <div className="title-row">
           <div className="title">
-            <span className="dot" aria-hidden> </span>
+            <span className="dot" aria-hidden />
             <span>FreshRecipes</span>
           </div>
-          {/* right-side space kept empty to match screenshot spacing */}
           <div style={{ width: 112, height: 40 }} />
         </div>
 
@@ -67,20 +64,16 @@ export default function HomePage() {
             />
           </label>
 
-          <button
-            className="btn btn-primary"
-            onClick={onGenerate}
-            disabled={busy}
-          >
+          <button className="btn btn-primary" onClick={onGenerate} disabled={busy}>
             {busy ? 'Working…' : 'Generate'}
           </button>
 
-          {/* Greyed Save button exactly like your screenshot */}
+          {/* Greyed Save button (disabled until valid HTML) */}
           <button className="btn btn-ghost" disabled={!canSave}>
             Save
           </button>
 
-          {/* Open Archive button inside the card, like the screenshot */}
+          {/* Open Archive button inside card */}
           <a className="btn-link" href="/archive">Open Archive</a>
         </div>
       </div>
@@ -90,15 +83,6 @@ export default function HomePage() {
           <b>Error:</b> {error}
         </div>
       )}
-
-      <style jsx>{`
-        .dot {
-          width: 18px; height: 18px; border-radius: 50%;
-          display: inline-block;
-          background: conic-gradient(from 0deg, #ffbb99, #ff7aa2, #7b6bff, #48c0e6, #ffbb99);
-          box-shadow: 0 0 0 3px rgba(123, 107, 255, 0.12);
-        }
-      `}</style>
     </>
   );
 }
