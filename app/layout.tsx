@@ -6,7 +6,7 @@ import { Playfair_Display } from 'next/font/google'
 const playfair = Playfair_Display({
   subsets: ['latin'],
   display: 'swap',
-  weight: ['400', '600', '700', '800', '900'],
+  weight: ['400', '700', '800', '900'],
   variable: '--font-playfair',
 })
 
@@ -26,9 +26,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <span className="brand-text">FreshRecipes</span>
             </a>
             <nav className="header-actions">
-              <a className="btn btn-ghost" href="/archive">
-                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden><path d="M3 3h18v4H3V3zm2 6h14v12H5V9zm3 2v2h8v-2H8z" fill="currentColor"/></svg>
-                <span>Archive</span>
+              <a className="btn btn-outline" href="/archive">
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+                  <path d="M3 3h18v4H3V3zm2 6h14v12H5V9zm3 2v2h8v-2H8z" fill="currentColor"/>
+                </svg>
+                Archive
               </a>
             </nav>
           </div>
